@@ -1,0 +1,58 @@
+name: Docker
+
+on:
+  push:
+    branches:
+      - main          # Publishes the :latest tag
+    tags:
+      - "v*"          # Publishes a versioned tag (e.g. :v1.2.3)
+
+env:
+  REGISTRY: ghcr.io
+  # IMAGE_NAME resolves to e-solutions-gmbh/doris-rest-loader (lowercase).
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write   # Required to push to ghcr.io
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # On a version tag (e.g. refs/tags/v1.2.3) → publish :v1.2.3
+            type=ref,event=tag
+            # On push to main → publish :latest
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Layer caching via GitHub Actions cache to speed up subsequent builds.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

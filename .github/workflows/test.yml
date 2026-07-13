@@ -1,0 +1,74 @@
+name: Test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Reads the Go version from go.mod automatically.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify module integrity
+        run: go mod verify
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Build
+        run: go build ./...
+
+      - name: Run tests with race detector
+        run: go test -v -race -count=1 -coverprofile=coverage.out ./...
+
+      - name: Print coverage summary
+        run: go tool cover -func=coverage.out | tail -1
+
+  fuzz:
+    name: Fuzz smoke test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Reads the Go version from go.mod automatically.
+          go-version-file: go.mod
+          cache: true
+
+      # The unit-test job above already runs each fuzz target's seed corpus.
+      # This job briefly fuzzes each target to explore beyond the seeds and
+      # catch newly introduced crashers.
+      - name: Fuzz extractEntities
+        run: go test ./internal/runner/ -run '^ -fuzz '^FuzzExtractEntities -fuzztime 30s
+
+      - name: Fuzz runner pipeline
+        run: go test ./internal/runner/ -run '^ -fuzz '^FuzzRunnerPipeline -fuzztime 30s
+
+      - name: Fuzz flattener
+        run: go test ./internal/flattener/ -run '^ -fuzz '^FuzzFlatten -fuzztime 30s
+
+      - name: Fuzz pagination BuildURL
+        run: go test ./internal/pagination/ -run '^ -fuzz '^FuzzBuildURL -fuzztime 30s
