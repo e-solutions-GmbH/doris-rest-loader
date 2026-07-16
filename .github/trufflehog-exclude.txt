@@ -1,0 +1,21 @@
+# Paths excluded from TruffleHog secret scanning.
+#
+# TruffleHog matches these as regular expressions (one per line, blank lines
+# and lines starting with '#' are ignored). This is NOT glob syntax — dots
+# must be escaped where you want a literal dot.
+#
+# Ported from the [allowlist] block in .github/gitleaks.toml.
+
+# Original gitleaks allowlist entry.
+\.pre-commit-config\.yaml
+
+# The scanner configs themselves contain regex patterns and keywords
+# ("password", "token", "key", sample IPs, ...) that would self-trigger the
+# custom detectors defined in .github/trufflehog.yaml.
+\.github/trufflehog\.yaml
+\.github/trufflehog-exclude\.txt
+\.github/gitleaks\.toml
+
+# The generated CycloneDX SBOM legitimately contains dependency URLs and
+# author names — not secrets.
+bom\.cdx\.json

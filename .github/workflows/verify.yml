@@ -123,6 +123,11 @@ jobs:
           path: ./
           base: ${{ github.event.pull_request.base.sha }}
           head: ${{ github.event.pull_request.head.sha }}
-          # Only report findings whose secret was verified as live, cutting
-          # down noise from false positives.
-          extra_args: --only-verified
+          # --config          → custom regex detectors (ported from gitleaks.toml)
+          # --exclude-paths   → regex-based path allowlist
+          # --results         → keep verified built-in hits AND custom-detector
+          #                     hits ("unknown"). We deliberately do NOT use
+          #                     --only-verified, which would drop every custom
+          #                     detector defined in .github/trufflehog.yaml
+          #                     (custom regex rules have no verification API).
+          extra_args: --config=.github/trufflehog.yaml --exclude-paths=.github/trufflehog-exclude.txt --results=verified,unknown
