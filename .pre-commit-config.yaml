@@ -26,3 +26,23 @@ repos:
           - ci
           - chore
           - revert
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.27.2 # Use the latest stable version of Gitleaks
+    hooks:
+      - id: gitleaks
+        name: Detect hardcoded secrets in committed changes
+        description: Detect hardcoded secrets in committed changes on the branch
+        entry: gitleaks git -v --log-opts="master.." --config=./gitleaks.toml
+        pass_filenames: false
+
+      - id: gitleaks
+        name: Detect hardcoded secrets in staged files
+        description: Detect hardcoded secrets in staged files
+        entry: gitleaks git -v --staged --config=./gitleaks.toml
+        pass_filenames: false
+        
+      - id: gitleaks
+        name: Detect hardcoded secrets in unstaged files
+        description: Detect hardcoded secrets in staged files
+        entry: gitleaks git -v --pre-commit --config=./gitleaks.toml
+        pass_filenames: false
