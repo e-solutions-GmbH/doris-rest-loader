@@ -27,7 +27,7 @@ repos:
           - chore
           - revert
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.27.2 # Use the latest stable version of Gitleaks
+    rev: v8.30.1 # Use the latest stable version of Gitleaks
     hooks:
       - id: gitleaks
         name: Detect hardcoded secrets in committed changes
