@@ -1,0 +1,59 @@
+# Gitleaks Configuration File
+# This file defines rules for detecting sensitive information in the codebase.
+
+[extend]
+# Use default Gitleaks rules in addition to custom rules defined below.
+useDefault = true
+
+[allowlist]
+# Exclude specific files from being scanned.
+paths = [
+    '''.pre-commit-config.yaml''',
+]
+
+# Rule: Detect hardcoded IP addresses
+[[rules]]
+id = "ip-address-detection"
+description = "Detect hardcoded IP addresses"
+regex = '''\b((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b'''
+keywords = ["ip", "address"]
+
+# Rule: Detect hardcoded URLs with "eso" or "esolutions"
+[[rules]]
+id = "eso-url-detection"
+description = "Detect hardcoded URLs containing 'eso' or 'esolutions'"
+regex = '''\b(?:https?://)?[^\s]*\b(eso|esolutions)\b(.de|.local)\b'''
+keywords = ["url", "http", "https", "eso", "esolutions", "endpoint", "link"]
+
+# Rule: Detect hardcoded email addresses
+[[rules]]
+id = "email-detection"
+description = "Detect hardcoded email addresses"
+regex = '''\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b'''
+keywords = ["mail", "email", "@esolutions.de"]
+
+# Rule: Detect hardcoded personal data (e.g., names)
+[[rules]]
+id = "personal-data-detection"
+description = "Detect hardcoded personal data (e.g., names)"
+regex = '''\b[A-Z][a-z]+ [A-Z][a-z]+\b'''
+
+# Rule: Detect hardcoded authentication tokens
+[[rules]]
+id = "auth-token-detection"
+description = "Detect hardcoded authentication tokens"
+regex = '''\b[A-Za-z0-9_-]{16,}\b'''
+keywords = ["auth_token", "token", "auth", "access_token", "bearer"]
+
+# Rule: Detect hardcoded passwords
+[[rules]]
+id = "password-detection"
+description = "Detect hardcoded passwords or sensitive keys"
+regex = '''\b(password|pwd|pw|pass|key|token)[\s:=]+[^\s]+\b'''
+keywords = ["password", "pwd", "pw", "pass", "key", "token"]
+
+# Rule: Detect hardcoded ESO user credentials
+[[rules]]
+id = "eso-user-credential-detection"
+description = "Detect hardcoded ESO user credentials and admin credentials"
+regex = '''\b[a-z]{4}[0-9]{4}\b'''
