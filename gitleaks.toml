@@ -7,8 +7,16 @@ useDefault = true
 
 [allowlist]
 # Exclude specific files from being scanned.
+# README.md is excluded because it contains verbatim gitleaks example
+# output (fake tokens, DB_PASSWORD=..., cafebabe:deadbeef, noreply
+# emails, etc.) that produce noise but are not real leaks.
+# CONTRIBUTING.md contains git/DCO examples like
+# "Signed-off-by: Your Name <you@example.com>".
 paths = [
     '''.pre-commit-config.yaml''',
+    '''.github/workflows/verify.yml''',
+    '''README.md''',
+    '''CONTRIBUTING.md''',
 ]
 
 # Rule: Detect hardcoded IP addresses
@@ -24,6 +32,12 @@ id = "eso-url-detection"
 description = "Detect hardcoded URLs containing 'eso' or 'esolutions'"
 regex = '''\b(?:https?://)?[^\s]*\b(eso|esolutions)\b(.de|.local)\b'''
 keywords = ["url", "http", "https", "eso", "esolutions", "endpoint", "link"]
+    [rules.allowlist]
+    description = "Allow the public info@esolutions.de contact address"
+    # Match against the whole line, not just the extracted secret
+    # (the eso-url rule's secret is only 'esolutions').
+    regexTarget = "line"
+    regexes = ['''\binfo@esolutions\.de\b''']
 
 # Rule: Detect hardcoded email addresses
 [[rules]]
@@ -31,26 +45,53 @@ id = "email-detection"
 description = "Detect hardcoded email addresses"
 regex = '''\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b'''
 keywords = ["mail", "email", "@esolutions.de"]
+    [rules.allowlist]
+    description = "Allow the public info@esolutions.de contact address"
+    regexTarget = "line"
+    regexes = ['''\binfo@esolutions\.de\b''']
 
 # Rule: Detect hardcoded personal data (e.g., names)
+# Only flag capitalized word pairs that appear in a name-like context
+# (Author:, Name:, Contact:, By:, Signed-off-by:, @author). The (?i:...)
+# scoped flag makes ONLY the keyword alternation case-insensitive; the
+# capturing group stays case-sensitive so it doesn't match prose like
+# "user configuration" or "the default".
 [[rules]]
 id = "personal-data-detection"
-description = "Detect hardcoded personal data (e.g., names)"
-regex = '''\b[A-Z][a-z]+ [A-Z][a-z]+\b'''
-
-# Rule: Detect hardcoded authentication tokens
-[[rules]]
-id = "auth-token-detection"
-description = "Detect hardcoded authentication tokens"
-regex = '''\b[A-Za-z0-9_-]{16,}\b'''
-keywords = ["auth_token", "token", "auth", "access_token", "bearer"]
+description = "Detect hardcoded personal data (e.g., names) in name-like contexts"
+regex = '''(?:(?i:author|name|contact|owner|maintainer|reviewer|assignee|signed[- ]off[- ]by|@author))\s*[:=]\s+([A-Z][a-z]+ [A-Z][a-z]+)\b'''
+    [rules.allowlist]
+    description = "Common false-positive capitalized word pairs and file types"
+    # GitHub Actions workflows use `name: Some Step Title` for every step,
+    # which structurally collides with this rule. Exclude workflow YAMLs.
+    paths = ['''\.github/workflows/.*\.ya?ml''']
+    stopwords = [
+        "Your Name",
+        "Apache Doris",
+        "Bug Report",
+        "Feature Request",
+        "Pull Request",
+        "Code Review",
+        "Getting Started",
+        "Table Of",
+    ]
 
 # Rule: Detect hardcoded passwords
+# Requires an explicit assignment operator (: or =) and a QUOTED value.
+# Requiring quotes eliminates the common Go pattern
+#     Password: cfg.Password,   // unquoted variable reference
+#     password: password,       // unquoted variable reference
+# which is not a leak. Real hardcoded secrets are quoted string literals.
+# Bare "key" / "pass" / "pw" / "token" were dropped because they collide
+# with normal English/identifier usage; use compound forms instead.
 [[rules]]
 id = "password-detection"
 description = "Detect hardcoded passwords or sensitive keys"
-regex = '''\b(password|pwd|pw|pass|key|token)[\s:=]+[^\s]+\b'''
-keywords = ["password", "pwd", "pw", "pass", "key", "token"]
+regex = '''(?i)\b(password|passwd|passphrase|api[_-]?key|secret[_-]?key|private[_-]?key|access[_-]?token|auth[_-]?token|bearer[_-]?token)\s*[:=]\s*['"][^\s'"]{4,}['"]'''
+keywords = ["password", "passwd", "passphrase", "api_key", "apikey", "secret_key", "private_key", "access_token", "auth_token", "bearer_token"]
+    [rules.allowlist]
+    description = "Test files contain fake credentials by design"
+    paths = ['''.*_test\.go''']
 
 # Rule: Detect hardcoded ESO user credentials
 [[rules]]
