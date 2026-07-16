@@ -1,0 +1,83 @@
+name: Feature Request
+description: Suggest a new capability or enhancement.
+title: "feat: <short summary>"
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement! Please describe the *problem*
+        you're trying to solve before proposing a solution — this helps us
+        keep the tool focused and simple.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight checks
+      options:
+        - label: I have searched existing issues and discussions and this is not a duplicate.
+          required: true
+        - label: I have read the [Code of Conduct](../blob/main/CODE_OF_CONDUCT.md).
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Motivation
+      description: What are you trying to achieve? What is currently painful or impossible?
+      placeholder: |
+        As a data engineer ingesting <API>, I need <capability> because <constraint>.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        Describe your preferred approach. For config changes, sketch the new
+        YAML shape. For pipeline changes, describe how it fits the existing
+        Runner / Fetcher / Flattener / Doris architecture (see README).
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about, and why you rejected them.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Which component would this affect?
+      multiple: true
+      options:
+        - auth
+        - config
+        - doris (Stream Load client)
+        - fetcher
+        - flattener
+        - jsonpath
+        - pagination
+        - runner
+        - CLI / packaging
+        - CI / release
+        - docs
+        - other / not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: breaking
+    attributes:
+      label: Compatibility
+      options:
+        - label: This proposal is backward-compatible with existing `config.yaml` files.
+        - label: I am willing to work on a PR for this.
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Links to related APIs, RFCs, upstream docs, etc.

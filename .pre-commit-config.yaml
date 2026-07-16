@@ -1,0 +1,28 @@
+# Pre-commit configuration.
+#
+# Install once per clone with:
+#   pre-commit install --hook-type commit-msg
+#
+# See https://pre-commit.com/ and CONTRIBUTING.md for details.
+
+repos:
+  # Enforce Conventional Commits on every commit message.
+  # https://github.com/compilerla/conventional-pre-commit
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args:
+          # Explicit list of allowed types. Keep in sync with CONTRIBUTING.md.
+          - feat
+          - fix
+          - docs
+          - style
+          - refactor
+          - perf
+          - test
+          - build
+          - ci
+          - chore
+          - revert
