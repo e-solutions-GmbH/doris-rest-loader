@@ -1,0 +1,128 @@
+name: Verify
+
+# Runs as a required gate on every pull request. Each job below is independent
+# so it can be marked as a required status check in branch protection rules.
+on:
+  pull_request:
+    branches: ["**"]
+
+# Least-privilege defaults; individual jobs opt in to more if needed.
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  license-compliance:
+    name: Open Source License Compliance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install go-licenses
+        run: go install github.com/google/go-licenses@latest
+
+      - name: Check for disallowed licenses
+        # Fails the job if any dependency ships a forbidden/restricted/unknown
+        # license (copyleft, unresolvable, etc.). Adjust the list to match your
+        # organization's policy if needed.
+        run: |
+          go-licenses check ./... \
+            --disallowed_types=forbidden,restricted,unknown
+
+      - name: Generate license report (CSV)
+        if: always()
+        run: |
+          go-licenses report ./... > licenses-report.csv 2> licenses-report.err || true
+
+      - name: Upload license report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: license-report
+          path: |
+            licenses-report.csv
+            licenses-report.err
+          if-no-files-found: warn
+
+  sbom:
+    name: CycloneDX SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install CycloneDX gomod generator
+        uses: CycloneDX/gh-gomod-generate-sbom@v2
+        with:
+          version: v1
+
+      - name: Generate CycloneDX SBOM
+        # -licenses  → resolve and embed license info for each component
+        # -json      → emit JSON (CycloneDX 1.4)
+        # -std       → include the Go standard library as a component
+        run: |
+          cyclonedx-gomod mod \
+            -licenses \
+            -json \
+            -std \
+            -output bom.cdx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cyclonedx-sbom
+          path: bom.cdx.json
+          if-no-files-found: error
+
+  repolinter:
+    name: Repolinter
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Repolinter
+        uses: newrelic/repolinter-action@v1
+        with:
+          # Fail the job (act as a merge gate) instead of only opening an issue.
+          output_type: exit-code
+          # Project-specific ruleset. See .github/repolinter.json — it enforces
+          # LICENSE / README / CONTRIBUTING / CODE_OF_CONDUCT / SECURITY /
+          # CI presence and disables the CHANGELOG requirement.
+          config_file: .github/repolinter.json
+
+  secret-scan:
+    name: TruffleHog Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Full history is required so TruffleHog can diff PR head against base.
+          fetch-depth: 0
+
+      - name: Run TruffleHog (PR diff)
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+          # Only report findings whose secret was verified as live, cutting
+          # down noise from false positives.
+          extra_args: --only-verified

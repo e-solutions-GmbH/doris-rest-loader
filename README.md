@@ -168,27 +168,27 @@ doris:
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  doris-rest-loader                                              │
-│                                                                  │
+│                                                                 │
 │  Config ──► Runner                                              │
-│              │                                                   │
+│              │                                                  │
 │              ├─ Auth Adapter    (Prepare preflight token)       │
-│              │                                                   │
+│              │                                                  │
 │              ├─ Fetcher ──► Page 1 (sync)                       │
-│              │     │           │                                 │
+│              │     │           │                                │
 │              │     │         Extract entities (data_path)       │
-│              │     │         Flatten entities                    │
+│              │     │         Flatten entities                   │
 │              │     │         Stream ──► Doris Stream Load       │
-│              │     │                                             │
+│              │     │                                            │
 │              │     └─► Evaluate pagination (total pages)        │
-│              │                                                   │
+│              │                                                  │
 │              └─ Goroutine pool (pages 2..N)                     │
 │                    │  ┌──────────────────────────────┐          │
 │                    ├──► goroutine: fetch + flatten ──► channel  │
 │                    ├──► goroutine: fetch + flatten ──► channel  │
 │                    └──► goroutine: fetch + flatten ──► channel  │
-│                                                       │          │
+│                                                       │         │
 │                         Reader ◄──────────────────────┘         │
-│                            │                                     │
+│                            │                                    │
 │                            └──► Doris Stream Load (per page)    │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -320,21 +320,34 @@ docker run --rm \
 
 ```
 doris-rest-loader/
-├── cmd/doris-rest-loader/    # Binary entry point
+├── cmd/doris-rest-loader/        # Binary entry point
 ├── internal/
-│   ├── auth/                 # Auth adapters (noauth, basic, bearer, preflight, oauth2)
-│   ├── config/               # YAML config structs, loader, defaults, validation
-│   ├── doris/                # Doris Stream Load client
-│   ├── fetcher/              # HTTP fetcher with retry/backoff
-│   ├── flattener/            # Entity flattening and field selection
-│   ├── jsonpath/             # Minimal dot-notation JSON path resolver (no deps)
-│   ├── pagination/           # Pagination adapters (page_number, offset, cursor stub)
-│   └── runner/               # Ingestion pipeline orchestration
-├── .github/workflows/
-│   ├── test.yml              # CI: test on every push and PR
-│   └── docker.yml            # CD: build & push image on main / version tag
+│   ├── auth/                     # Auth adapters (noauth, basic, bearer, preflight, oauth2)
+│   ├── config/                   # YAML config structs, loader, defaults, validation
+│   ├── doris/                    # Doris Stream Load client
+│   ├── fetcher/                  # HTTP fetcher with retry/backoff
+│   ├── flattener/                # Entity flattening and field selection
+│   ├── jsonpath/                 # Minimal dot-notation JSON path resolver (no deps)
+│   ├── pagination/               # Pagination adapters (page_number, offset, cursor stub)
+│   └── runner/                   # Ingestion pipeline orchestration
+├── .github/
+│   ├── workflows/
+│   │   ├── test.yml              # CI: build, gofmt, race tests, fuzz smoke
+│   │   ├── verify.yml            # PR gate: license, SBOM, Repolinter, secret scan
+│   │   └── docker.yml            # CD: build & push image on main / version tag
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── bug_report.yml        # Bug report form
+│   │   ├── feature_request.yml   # Feature request form
+│   │   └── config.yml            # Issue chooser (disables blank, routes security)
+│   ├── PULL_REQUEST_TEMPLATE.md  # PR checklist (DCO, CC, tests, CI gates)
+│   └── repolinter.json           # Custom Repolinter ruleset used by verify.yml
+├── CODE_OF_CONDUCT.md            # Contributor Covenant v2.1
+├── CONTRIBUTING.md               # DCO, Conventional Commits, workflow
+├── SECURITY.md                   # Private vulnerability reporting
+├── .pre-commit-config.yaml       # Conventional-Commits commit-msg hook
 ├── Dockerfile
 ├── go.mod
+├── LICENSE
 └── README.md
 ```
 

@@ -1,0 +1,89 @@
+name: Bug Report
+description: Report a defect in doris-rest-loader.
+title: "bug: <short summary>"
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report!
+
+        ⚠️ **Do not report security vulnerabilities here.** See [SECURITY.md](../blob/main/SECURITY.md) for private reporting instructions.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight checks
+      options:
+        - label: I have searched existing issues and this is not a duplicate.
+          required: true
+        - label: I have read the [Code of Conduct](../blob/main/CODE_OF_CONDUCT.md).
+          required: true
+        - label: This is not a security vulnerability (those go via SECURITY.md).
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: doris-rest-loader version, container tag, or git commit SHA.
+      placeholder: "v1.0.0 / ghcr.io/e-solutions-gmbh/doris-rest-loader:latest / commit abc1234"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Minimal, deterministic steps. Include a **sanitized** `config.yaml`
+        snippet if the bug is configuration-related. **Redact all credentials.**
+      value: |
+        1.
+        2.
+        3.
+
+        Expected:
+        Actual:
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: Paste JSON slog output. Redact secrets and PII.
+      render: shell
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        - OS / arch (e.g. Ubuntu 22.04 x86_64)
+        - Go version (`go version`) — only if running the binary directly
+        - Deployment (bare binary / Docker / Kubernetes CronJob)
+        - Apache Doris version
+        - Source API type (if relevant)
+      value: |
+        - OS/arch:
+        - Go version:
+        - Deployment:
+        - Doris version:
+        - Source API:
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else — related issues, workarounds already tried, screenshots.
