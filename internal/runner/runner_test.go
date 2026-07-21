@@ -148,6 +148,64 @@ func TestRunner_MultiplePages(t *testing.T) {
 	}
 }
 
+// TestRunner_MaxPagesCap verifies Pagination.MaxPages caps ingestion below the source-reported totalPages.
+func TestRunner_MaxPagesCap(t *testing.T) {
+	const sourceTotalPages = 5
+	const maxPages = 2
+	var dorisCallCount int32
+	var dorisRowCount int32
+
+	dorisSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&dorisCallCount, 1)
+		dec := json.NewDecoder(r.Body)
+		for {
+			var obj map[string]any
+			if err := dec.Decode(&obj); err != nil {
+				break
+			}
+			atomic.AddInt32(&dorisRowCount, 1)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"Status": "Success"})
+	}))
+	defer dorisSrv.Close()
+
+	sourceSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var pageNum int
+		fmt.Sscanf(r.URL.Path, "/%d/", &pageNum)
+		if pageNum == 0 {
+			pageNum = 1
+		}
+		if pageNum > maxPages {
+			t.Errorf("source received request for page %d, but MaxPages=%d should have prevented it", pageNum, maxPages)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(pageResponse(pageNum, sourceTotalPages, []map[string]any{
+			{"id": float64(pageNum*10 + 1)},
+			{"id": float64(pageNum*10 + 2)},
+		}))
+	}))
+	defer sourceSrv.Close()
+
+	cfg := buildConfig(sourceSrv.URL, dorisSrv.URL, sourceTotalPages, "meta.totalPages")
+	cfg.Pagination.MaxPages = maxPages
+
+	r, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New returned unexpected error: %v", err)
+	}
+	if err := r.Run(context.Background()); err != nil {
+		t.Fatalf("Run returned unexpected error: %v", err)
+	}
+
+	if got := atomic.LoadInt32(&dorisCallCount); got != maxPages {
+		t.Errorf("expected %d Doris calls (capped by MaxPages), got %d", maxPages, got)
+	}
+	if got := atomic.LoadInt32(&dorisRowCount); got != maxPages*2 {
+		t.Errorf("expected %d rows total (%d pages × 2 items), got %d", maxPages*2, maxPages, got)
+	}
+}
+
 func TestRunner_ArrayAtRoot_SinglePage(t *testing.T) {
 	var dorisCallCount int32
 
