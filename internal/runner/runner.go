@@ -204,26 +204,29 @@ func (r *Runner) fetchAndStreamRemaining(ctx context.Context, pageInfo *paginati
 	results := make(chan pageResult, r.cfg.Threading.MaxGoroutines)
 	sem := make(chan struct{}, r.cfg.Threading.MaxGoroutines)
 
+	// Producer/consumer pipeline: the dispatch loop runs in its own goroutine
+	// so this function can drain `results` concurrently. `sem` caps in-flight
+	// fetches at MaxGoroutines; `results` is buffered to the same size so a
+	// slow consumer applies back-pressure without starving the pool.
 	var wg sync.WaitGroup
-	for pageNum := pageInfo.StartPage + 1; pageNum <= pageInfo.TotalPages; pageNum++ {
-		wg.Add(1)
-		sem <- struct{}{} // acquire concurrency slot
-
-		go func(pn int) {
-			defer wg.Done()
-			defer func() { <-sem }() // release slot when done
-
-			results <- r.fetchPage(ctx, pn)
-		}(pageNum)
-	}
-
-	// Close the results channel once every goroutine has finished.
 	go func() {
+		for pageNum := pageInfo.StartPage + 1; pageNum <= pageInfo.TotalPages; pageNum++ {
+			wg.Add(1)
+			sem <- struct{}{} // acquire concurrency slot
+
+			go func(pn int) {
+				defer wg.Done()
+				defer func() { <-sem }() // release slot when done
+
+				results <- r.fetchPage(ctx, pn)
+			}(pageNum)
+		}
+		// Close the results channel once every worker has finished.
 		wg.Wait()
 		close(results)
 	}()
 
-	// Read results serially and stream each to Doris.
+	// Read results as they arrive and stream each to Doris.
 	var errs []error
 	for res := range results {
 		if res.err != nil {
