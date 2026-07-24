@@ -91,9 +91,14 @@ doris:
 		t.Errorf("expected Separator='.', got %q", cfg.Flattening.Separator)
 	}
 
-	// Doris user default
-	if cfg.Doris.User != "root" {
-		t.Errorf("expected Doris.User=root, got %q", cfg.Doris.User)
+	// Doris user default (applyDefaults kicks in because YAML omits it).
+	if cfg.Doris.User != DefaultDorisUser {
+		t.Errorf("expected Doris.User=%q (DefaultDorisUser), got %q", DefaultDorisUser, cfg.Doris.User)
+	}
+
+	// Doris database is preserved from YAML — no accidental default mangling.
+	if cfg.Doris.Database != "mydb" {
+		t.Errorf("expected Doris.Database=mydb (from YAML), got %q", cfg.Doris.Database)
 	}
 }
 
@@ -116,6 +121,48 @@ flattening:
 	}
 	if cfg.Flattening.Enabled == nil || *cfg.Flattening.Enabled {
 		t.Error("expected Flattening.Enabled=false after explicit config")
+	}
+}
+
+func TestLoad_FlatteningRawJSONColumn(t *testing.T) {
+	yaml := `
+source:
+  url: "https://api.example.com/items"
+pagination:
+  num_pages_path: "pages"
+doris:
+  host: "http://doris:8030"
+  database: "db"
+  table: "t"
+flattening:
+  raw_json_column: "raw_json"
+`
+	cfg, err := Load(writeTempConfig(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Flattening.RawJSON != "raw_json" {
+		t.Errorf("expected Flattening.RawJSON=raw_json, got %q", cfg.Flattening.RawJSON)
+	}
+}
+
+func TestLoad_FlatteningRawJSONColumn_DefaultEmpty(t *testing.T) {
+	yaml := `
+source:
+  url: "https://api.example.com/items"
+pagination:
+  num_pages_path: "pages"
+doris:
+  host: "http://doris:8030"
+  database: "db"
+  table: "t"
+`
+	cfg, err := Load(writeTempConfig(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Flattening.RawJSON != "" {
+		t.Errorf("expected Flattening.RawJSON='' by default, got %q", cfg.Flattening.RawJSON)
 	}
 }
 
@@ -182,6 +229,29 @@ doris:
 	_, err := Load(writeTempConfig(t, yaml))
 	if err == nil {
 		t.Fatal("expected error for missing doris.host")
+	}
+}
+
+func TestLoad_ApplyDefaults_DorisUserAndDatabase(t *testing.T) {
+	// YAML omits doris.user and doris.database; both must default via constants.
+	yaml := `
+source:
+  url: "https://api.example.com/items"
+pagination:
+  num_pages_path: "pages"
+doris:
+  host: "http://doris:8030"
+  table: "t"
+`
+	cfg, err := Load(writeTempConfig(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Doris.User != DefaultDorisUser {
+		t.Errorf("expected Doris.User=%q, got %q", DefaultDorisUser, cfg.Doris.User)
+	}
+	if cfg.Doris.Database != DefaultDorisDatabase {
+		t.Errorf("expected Doris.Database=%q, got %q", DefaultDorisDatabase, cfg.Doris.Database)
 	}
 }
 

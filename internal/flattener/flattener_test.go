@@ -287,6 +287,47 @@ func TestFlatten_MaxDepth0_UnlimitedDepth(t *testing.T) {
 	}
 }
 
+func TestFlatten_RawJSONCol_IsMapNotString(t *testing.T) {
+	cfg := enabledCfg()
+	cfg.RawJSON = "raw_json"
+	f := New(cfg)
+
+	entity := map[string]any{
+		"key":    "FEAT-1",
+		"status": map[string]any{"name": "Open"},
+	}
+	result, err := f.Flatten(entity)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+		return
+	}
+
+	// raw_json column must be present.
+	raw, ok := result["raw_json"]
+	if !ok {
+		t.Errorf("expected 'raw_json' key in flattened output; got keys: %v", keyList(result))
+		return
+	}
+
+	// Value must be map[string]any, not a string (ensures Doris JSON type, not VARCHAR).
+	rawMap, ok := raw.(map[string]any)
+	if !ok {
+		t.Errorf("raw_json value must be map[string]any, got %T; VARCHAR would mean wrong Doris column type", raw)
+		return
+	}
+	if rawMap["key"] != "FEAT-1" {
+		t.Errorf("raw_json[key]: expected FEAT-1, got %v", rawMap["key"])
+	}
+
+	// Flattened fields must also be present alongside raw_json.
+	if result["key"] != "FEAT-1" {
+		t.Errorf("flattened key: expected FEAT-1, got %v", result["key"])
+	}
+	if result["status.name"] != "Open" {
+		t.Errorf("flattened status.name: expected Open, got %v", result["status.name"])
+	}
+}
+
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 func boolPtr(b bool) *bool { return &b }

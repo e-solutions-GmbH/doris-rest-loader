@@ -35,10 +35,11 @@ import (
 
 // Flattener transforms entity maps according to the configured strategy.
 type Flattener struct {
-	enabled   bool
-	separator string
-	maxDepth  int // 0 = unlimited
-	include   []config.FieldMapping
+	enabled    bool
+	separator  string
+	maxDepth   int // 0 = unlimited
+	include    []config.FieldMapping
+	rawJSONCol string // when non-empty, inject full raw entity as JSON string under this column name
 }
 
 // New creates a Flattener from the given configuration.
@@ -54,10 +55,11 @@ func New(cfg config.FlatteningConfig) *Flattener {
 		sep = "."
 	}
 	return &Flattener{
-		enabled:   enabled,
-		separator: sep,
-		maxDepth:  cfg.MaxDepth,
-		include:   cfg.Include,
+		enabled:    enabled,
+		separator:  sep,
+		maxDepth:   cfg.MaxDepth,
+		include:    cfg.Include,
+		rawJSONCol: cfg.RawJSON,
 	}
 }
 
@@ -70,16 +72,38 @@ func New(cfg config.FlatteningConfig) *Flattener {
 //  2. If only flattening is enabled (no include list), the entire entity is
 //     recursively flattened into dot-notation keys.
 //  3. If neither applies, the entity is returned unchanged.
+//
+// In all cases, if rawJSONCol is configured the full original entity is
+// stored as map[string]any under that column name so the schema inferrer
+// types it as a Doris JSON column (not VARCHAR).
 func (f *Flattener) Flatten(entity map[string]any) (map[string]any, error) {
+	var result map[string]any
+	var err error
+
 	if len(f.include) > 0 {
-		return f.selectFields(entity)
-	}
-	if f.enabled {
-		result := make(map[string]any, len(entity))
+		result, err = f.selectFields(entity)
+	} else if f.enabled {
+		result = make(map[string]any, len(entity))
 		flattenMap(entity, "", f.separator, f.maxDepth, 0, result)
-		return result, nil
+	} else {
+		// pass-through — copy to avoid mutating the original
+		result = make(map[string]any, len(entity))
+		for k, v := range entity {
+			result[k] = v
+		}
 	}
-	return entity, nil
+
+	if err != nil {
+		return nil, err
+	}
+
+	if f.rawJSONCol != "" {
+		// Store the original entity map directly so the schema inferrer
+		// types this column as Doris JSON (not VARCHAR).
+		result[f.rawJSONCol] = entity
+	}
+
+	return result, nil
 }
 
 // FlattenAll applies Flatten to every entity in the slice and returns a new slice.

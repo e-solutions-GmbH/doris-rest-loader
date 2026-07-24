@@ -10,6 +10,18 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Defaults applied by applyDefaults when the corresponding YAML fields are
+// unset. Exported so callers and tests can reference them symbolically instead
+// of duplicating string literals.
+const (
+	// DefaultDorisUser is the Doris factory admin account, matching the
+	// MySQL/Postgres convention. Override via `doris.user` in YAML.
+	DefaultDorisUser = "root"
+	// DefaultDorisDatabase is dorest's conventional ingest target — the
+	// medallion Bronze/staging layer. Override via `doris.database` in YAML.
+	DefaultDorisDatabase = "bronze"
+)
+
 // Duration wraps time.Duration to enable YAML unmarshalling from human-readable
 // strings such as "1s", "500ms", "2m".
 type Duration struct {
@@ -176,6 +188,12 @@ type FlatteningConfig struct {
 	// When set, only these fields are emitted; flattening is still applied to
 	// nested values within each selected field if Enabled is true.
 	Include []FieldMapping `yaml:"include"`
+	// RawJSON, when non-empty, adds a column with this name containing the full
+	// original entity serialised as a JSON string before any flattening or field
+	// selection is applied. Use this to preserve the complete raw payload in
+	// bronze for future reprocessing without re-fetching.
+	// Example: raw_json_column: "raw_json"
+	RawJSON string `yaml:"raw_json_column"`
 }
 
 // ─── Doris ────────────────────────────────────────────────────────────────────
@@ -283,11 +301,10 @@ func applyDefaults(cfg *Config) {
 	}
 
 	if cfg.Doris.User == "" {
-		cfg.Doris.User = "root"
+		cfg.Doris.User = DefaultDorisUser
 	}
-
 	if cfg.Doris.Database == "" {
-		cfg.Doris.User = "bronze"
+		cfg.Doris.Database = DefaultDorisDatabase
 	}
 }
 
