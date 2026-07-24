@@ -152,6 +152,9 @@ flattening:
       as: "user_id"          # optional column rename
     - path: "user.email"     # no rename → column name = "user.email"
     - path: "score"
+  # Optional. Adds a column with this name containing the full original
+  # entity as JSON, for reprocessing later without re-fetching (default: unset).
+  raw_json_column: "raw_json"
 
 # ── Apache Doris Target ───────────────────────────────────────────────────────
 doris:
