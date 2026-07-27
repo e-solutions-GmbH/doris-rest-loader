@@ -111,6 +111,8 @@ pagination:
   limit_param: limit
   # Number of entities per page (default: 100)
   page_size: 50
+  # Maximum number of pages to fetch per run (default: 0 = unlimited)
+  max_pages: 10
   # Dot-notation paths to pagination metadata in the response.
   # page_number type requires EITHER num_pages_path
   # OR both total_entries_path + page_size.

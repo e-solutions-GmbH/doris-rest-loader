@@ -124,6 +124,15 @@ func (r *Runner) Run(ctx context.Context) error {
 		"page_size", pageInfo.PageSize,
 	)
 
+	// Apply optional MaxPages cap — limits pages fetched regardless of source size (value of 0 implies not caped and unlimited).
+	if maxPages := r.cfg.Pagination.MaxPages; maxPages > 0 && pageInfo.TotalPages > maxPages {
+		slog.InfoContext(ctx, "max_pages cap applied",
+			"source_total_pages", pageInfo.TotalPages,
+			"max_pages", maxPages,
+		)
+		pageInfo.TotalPages = maxPages
+	}
+
 	if pageInfo.TotalPages <= 1 {
 		slog.InfoContext(ctx, "single page result, ingestion complete")
 		return nil

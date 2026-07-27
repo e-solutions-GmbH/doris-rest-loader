@@ -263,3 +263,44 @@ func TestLoad_FileNotFound(t *testing.T) {
 		t.Fatal("expected error for missing file")
 	}
 }
+
+func TestLoad_PaginationMaxPagesSet(t *testing.T) {
+	yaml := `
+source:
+  url: "https://api.example.com/items"
+pagination:
+  num_pages_path: "pages"
+  max_pages: 1
+doris:
+  host: "http://doris:8030"
+  database: "db"
+  table: "t"
+`
+	cfg, err := Load(writeTempConfig(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Pagination.MaxPages != 1 {
+		t.Errorf("expected MaxPages=1, got %d", cfg.Pagination.MaxPages)
+	}
+}
+
+func TestLoad_PaginationMaxPagesDefaultsToUnlimited(t *testing.T) {
+	yaml := `
+source:
+  url: "https://api.example.com/items"
+pagination:
+  num_pages_path: "pages"
+doris:
+  host: "http://doris:8030"
+  database: "db"
+  table: "t"
+`
+	cfg, err := Load(writeTempConfig(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Pagination.MaxPages != 0 {
+		t.Errorf("expected MaxPages=0 (unlimited) when unset, got %d", cfg.Pagination.MaxPages)
+	}
+}

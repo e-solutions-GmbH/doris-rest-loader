@@ -109,6 +109,8 @@ type PaginationConfig struct {
 	LimitParam string `yaml:"limit_param"`
 	// PageSize is the number of entities per page (default: 100).
 	PageSize int `yaml:"page_size"`
+	// MaxPages caps the number of pages fetched (default: 0 = unlimited).
+	MaxPages int `yaml:"max_pages"`
 	// OffsetParam is the URL placeholder name for the offset value (default: "offset").
 	OffsetParam string `yaml:"offset_param"`
 	// CursorParam is the URL placeholder or query-param name for the cursor value (default: "cursor").
