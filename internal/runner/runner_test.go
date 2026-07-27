@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/e-solutions-GmbH/doris-rest-loader/internal/config"
 )
@@ -203,6 +204,67 @@ func TestRunner_MaxPagesCap(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&dorisRowCount); got != maxPages*2 {
 		t.Errorf("expected %d rows total (%d pages × 2 items), got %d", maxPages*2, maxPages, got)
+	}
+}
+
+// TestRunner_ManyPages_NoDeadlock guards against pipeline deadlock when TotalPages >> MaxGoroutines.
+func TestRunner_ManyPages_NoDeadlock(t *testing.T) {
+	const totalPages = 20
+	var dorisCallCount int32
+	var dorisRowCount int32
+
+	dorisSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&dorisCallCount, 1)
+		dec := json.NewDecoder(r.Body)
+		for {
+			var obj map[string]any
+			if err := dec.Decode(&obj); err != nil {
+				break
+			}
+			atomic.AddInt32(&dorisRowCount, 1)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"Status": "Success"})
+	}))
+	defer dorisSrv.Close()
+
+	sourceSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var pageNum int
+		fmt.Sscanf(r.URL.Path, "/%d/", &pageNum)
+		if pageNum == 0 {
+			pageNum = 1
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(pageResponse(pageNum, totalPages, []map[string]any{
+			{"id": float64(pageNum*10 + 1)},
+			{"id": float64(pageNum*10 + 2)},
+		}))
+	}))
+	defer sourceSrv.Close()
+
+	cfg := buildConfig(sourceSrv.URL, dorisSrv.URL, totalPages, "meta.totalPages")
+	// Force many-pages-per-slot: buffer/sem capacity much smaller than total pages.
+	cfg.Threading.MaxGoroutines = 3
+
+	r, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New returned unexpected error: %v", err)
+	}
+
+	// Bound the test: a regression will surface as a context deadline rather
+	// than a hung test process.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := r.Run(ctx); err != nil {
+		t.Fatalf("Run returned unexpected error (possible deadlock regression): %v", err)
+	}
+
+	if got := atomic.LoadInt32(&dorisCallCount); got != int32(totalPages) {
+		t.Errorf("expected %d Doris calls (one per page), got %d", totalPages, got)
+	}
+	if got := atomic.LoadInt32(&dorisRowCount); got != int32(totalPages*2) {
+		t.Errorf("expected %d rows total, got %d", totalPages*2, got)
 	}
 }
 
