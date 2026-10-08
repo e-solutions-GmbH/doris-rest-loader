@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -61,6 +62,8 @@ type Config struct {
 type SourceConfig struct {
 	// URL is the endpoint URL. Use {placeholder} syntax for path-injected
 	// pagination parameters (e.g. "https://api.example.com/v1/items/{page}/{limit}").
+	// When FanOut is configured, URL may additionally contain the fan-out
+	// placeholder (e.g. "{item}") substituted once per fan-out item.
 	URL string `yaml:"url"`
 	// Method is the HTTP method used for data requests (default: GET).
 	Method string `yaml:"method"`
@@ -73,6 +76,35 @@ type SourceConfig struct {
 	DataPath string `yaml:"data_path"`
 	// TLSSkipVerify disables TLS certificate verification. Use only in development.
 	TLSSkipVerify bool `yaml:"tls_skip_verify"`
+	// FanOut, when set, switches the runner into the two-stage "list, then fan
+	// out a parameterised call per list entry" pagination mode. Absent (nil)
+	// is the default and is fully backward compatible with the original
+	// single-stage paginated fetch.
+	FanOut *FanOutConfig `yaml:"fanout"`
+}
+
+// ─── Fan-out ────────────────────────────────────────────────────────────────
+
+// FanOutConfig defines the "list, then fan out a parameterised call per list
+// entry" source mode: a list endpoint enumerates parent entities/identifiers,
+// and one detail request (source.url, with the fan-out item substituted in)
+// is issued per identifier.
+type FanOutConfig struct {
+	// ListURL is the endpoint that enumerates the parent entities (required).
+	ListURL string `yaml:"list_url"`
+	// ListDataPath is a dot-notation path to the array of parent entities in
+	// the list response. Defaults to the response root.
+	ListDataPath string `yaml:"list_data_path"`
+	// ItemField is the dot-notation path (within one list entity) to the
+	// identifier value to fan out on (required).
+	ItemField string `yaml:"item_field"`
+	// ItemPlaceholder is the placeholder name substituted into source.url for
+	// each item (default: "item", i.e. "{item}" in source.url).
+	ItemPlaceholder string `yaml:"item_placeholder"`
+	// ListPagination optionally paginates the list fetch itself, using the
+	// same schema/semantics as the top-level `pagination` block. Omit if the
+	// list endpoint returns everything in a single response.
+	ListPagination PaginationConfig `yaml:"list_pagination"`
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -135,6 +167,15 @@ type PaginationConfig struct {
 	TotalEntriesPath string `yaml:"total_entries_path"`
 	// CursorPath is the dot-notation path to the next cursor value in the response (cursor stub).
 	CursorPath string `yaml:"cursor_path"`
+}
+
+// IsZero reports whether p is the zero-value PaginationConfig, i.e. nothing
+// was configured. Used by source.fanout.list_pagination to distinguish "not
+// configured" (the list endpoint returns everything in one response) from an
+// explicitly configured block. All fields are comparable, so direct equality
+// is sufficient.
+func (p PaginationConfig) IsZero() bool {
+	return p == PaginationConfig{}
 }
 
 // ─── Threading ────────────────────────────────────────────────────────────────
@@ -251,29 +292,22 @@ func applyDefaults(cfg *Config) {
 		cfg.Auth.Type = "noauth"
 	}
 
-	if cfg.Pagination.Type == "" {
-		cfg.Pagination.Type = "page_number"
-	}
-	if cfg.Pagination.Injection == "" {
-		cfg.Pagination.Injection = "path"
-	}
-	if cfg.Pagination.StartPage == 0 {
-		cfg.Pagination.StartPage = 1
-	}
-	if cfg.Pagination.PageParam == "" {
-		cfg.Pagination.PageParam = "page"
-	}
-	if cfg.Pagination.LimitParam == "" {
-		cfg.Pagination.LimitParam = "limit"
-	}
-	if cfg.Pagination.OffsetParam == "" {
-		cfg.Pagination.OffsetParam = "offset"
-	}
-	if cfg.Pagination.CursorParam == "" {
-		cfg.Pagination.CursorParam = "cursor"
-	}
-	if cfg.Pagination.PageSize == 0 {
-		cfg.Pagination.PageSize = 100
+	applyPaginationDefaults(&cfg.Pagination)
+
+	// fan_out is purely additive: only touch it (and its optional nested
+	// list_pagination) when the block is actually present in the config.
+	if cfg.Source.FanOut != nil {
+		if cfg.Source.FanOut.ItemPlaceholder == "" {
+			cfg.Source.FanOut.ItemPlaceholder = "item"
+		}
+		// list_pagination itself is optional ("omit if the list endpoint
+		// returns everything in a single response"); only apply defaults
+		// when the user configured at least one of its fields. Otherwise
+		// leave it as the zero value so validate()/the runner treat it as
+		// absent rather than requiring e.g. total_entries_path.
+		if !cfg.Source.FanOut.ListPagination.IsZero() {
+			applyPaginationDefaults(&cfg.Source.FanOut.ListPagination)
+		}
 	}
 
 	if cfg.Threading.MaxGoroutines == 0 {
@@ -310,6 +344,37 @@ func applyDefaults(cfg *Config) {
 	}
 }
 
+// applyPaginationDefaults fills in sensible values for an unset
+// PaginationConfig. Shared between the top-level `pagination` block (always
+// applied) and the optional `source.fanout.list_pagination` block (applied
+// only when the latter was actually configured).
+func applyPaginationDefaults(p *PaginationConfig) {
+	if p.Type == "" {
+		p.Type = "page_number"
+	}
+	if p.Injection == "" {
+		p.Injection = "path"
+	}
+	if p.StartPage == 0 {
+		p.StartPage = 1
+	}
+	if p.PageParam == "" {
+		p.PageParam = "page"
+	}
+	if p.LimitParam == "" {
+		p.LimitParam = "limit"
+	}
+	if p.OffsetParam == "" {
+		p.OffsetParam = "offset"
+	}
+	if p.CursorParam == "" {
+		p.CursorParam = "cursor"
+	}
+	if p.PageSize == 0 {
+		p.PageSize = 100
+	}
+}
+
 // ─── Validation ───────────────────────────────────────────────────────────────
 
 // validate checks that the configuration is self-consistent and complete.
@@ -332,6 +397,35 @@ func validate(cfg *Config) error {
 	}
 	if err := validatePagination(cfg.Pagination); err != nil {
 		return err
+	}
+	if err := validateFanOut(cfg.Source); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateFanOut checks the optional source.fanout block. Absent (nil) is
+// always valid — fan_out is purely additive.
+func validateFanOut(s SourceConfig) error {
+	fo := s.FanOut
+	if fo == nil {
+		return nil
+	}
+	if fo.ListURL == "" {
+		return fmt.Errorf("source.fanout.list_url is required")
+	}
+	if fo.ItemField == "" {
+		return fmt.Errorf("source.fanout.item_field is required")
+	}
+	placeholder := "{" + fo.ItemPlaceholder + "}"
+	if !strings.Contains(s.URL, placeholder) {
+		return fmt.Errorf(
+			"source.url must contain the fan-out placeholder %q when source.fanout is configured", placeholder)
+	}
+	if !fo.ListPagination.IsZero() {
+		if err := validatePagination(fo.ListPagination); err != nil {
+			return fmt.Errorf("source.fanout.list_pagination: %w", err)
+		}
 	}
 	return nil
 }

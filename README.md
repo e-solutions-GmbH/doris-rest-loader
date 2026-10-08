@@ -56,6 +56,15 @@ source:
   data_path: "data.items"
   # Disable TLS certificate verification (development only).
   tls_skip_verify: false
+  # Optional. Switches the runner into a two-stage "list, then fan out a
+  # parameterised call per list entry" fetch mode. Absent (the default) is
+  # fully backward compatible with the single-stage paginated fetch above.
+  # See "Fan-Out Source Mode" below for the full semantics.
+  fanout:
+    list_url: "https://api.example.com/v1/items?type=X"
+    list_data_path: "items"
+    item_field: "key"
+    item_placeholder: "item"
 
 # ── Authentication ─────────────────────────────────────────────────────────────
 auth:
@@ -165,6 +174,85 @@ doris:
   password: ""
   tls_skip_verify: false
 ```
+
+---
+
+## Fan-Out Source Mode
+
+Many REST APIs expose data as a two-level hierarchy: a "list" endpoint
+enumerates a set of parent entities/identifiers, and the data of interest only
+lives behind a second "detail" endpoint, parameterised by each identifier
+(e.g. `GET /items?type=X` → `[{id: "a"}, {id: "b"}, ...]`, then
+`GET /items/{id}/details` once per `id`). `source.fanout` adds first-class
+support for this shape without requiring N hand-written configs.
+
+When `source.fanout` is present, the runner performs a two-stage fetch instead
+of the single-stage paginated fetch:
+
+- **Stage 1 — List fetch.** `fanout.list_url` is fetched, optionally paginated
+  via `fanout.list_pagination` (same schema as the top-level `pagination`
+  block — omit it if the list endpoint returns every identifier in one
+  response). `fanout.item_field` (dot-notation) is extracted from each list
+  entity and deduplicated into a set of fan-out items.
+- **Stage 2 — Detail fetch per item.** For each fan-out item, the value is
+  substituted into every `{fanout.item_placeholder}` occurrence (default:
+  `item`, i.e. `{item}`) in `source.url`. Each resulting per-item request runs
+  through the existing single-endpoint pipeline unchanged — including the
+  top-level `pagination` block, which now paginates **each item's detail
+  call independently** rather than the list call. Per-item fetches run
+  concurrently, bounded by `threading.max_goroutines`; a single failing item
+  is logged and skipped rather than aborting the whole run (same
+  fail-and-continue contract as per-page failures).
+
+```yaml
+source:
+  # {item} is substituted per fan-out item; may be combined with the
+  # top-level pagination block's own placeholders.
+  url: "https://api.example.com/v1/items/{item}/details"
+  method: GET
+  data_path: "data.items"      # applies to each per-item detail response
+  tls_skip_verify: true
+
+  fanout:
+    # Required. Endpoint that enumerates the parent entities.
+    list_url: "https://api.example.com/v1/items?type=X"
+    # Dot-notation path to the array of parent entities in the list response.
+    # Defaults to the response root, same convention as source.data_path.
+    list_data_path: "items"
+    # Required. Dot-notation path (within one list entity) to the identifier
+    # value to fan out on.
+    item_field: "key"
+    # Placeholder name substituted into source.url for each item (default: "item").
+    item_placeholder: "item"
+    # Optional: pagination for the list fetch itself. Omit if the list
+    # endpoint returns everything in a single response. Same schema/semantics
+    # as the top-level `pagination` block.
+    list_pagination:
+      type: page_number
+      injection: query_params
+      page_param: "p"
+      limit_param: "ps"
+      page_size: 500
+      total_entries_path: "paging.total"
+
+# Applies to EACH per-item detail call (stage 2), independently per item —
+# not to the list call.
+pagination:
+  type: page_number
+  injection: query_params
+  page_param: "p"
+  limit_param: "ps"
+  page_size: 100
+  total_entries_path: "paging.total"
+```
+
+`--dry-run` / `DRY_RUN=1` also supports `source.fanout`: it fetches the list,
+takes only the first fan-out item, runs stage 2 for that single item, and
+prints the inferred DDL from its first detail page — the fan-out analogue of
+today's "first page only" dry-run semantics.
+
+See [`examples/fanout-example.yaml`](examples/fanout-example.yaml) for a
+complete, generic example.
 
 ---
 
@@ -330,6 +418,7 @@ doris-rest-loader/
 │   ├── auth/                     # Auth adapters (noauth, basic, bearer, preflight, oauth2)
 │   ├── config/                   # YAML config structs, loader, defaults, validation
 │   ├── doris/                    # Doris Stream Load client
+│   ├── fanout/                   # Fan-out item extraction and URL substitution
 │   ├── fetcher/                  # HTTP fetcher with retry/backoff
 │   ├── flattener/                # Entity flattening and field selection
 │   ├── jsonpath/                 # Minimal dot-notation JSON path resolver (no deps)

@@ -374,3 +374,194 @@ doris:
 		t.Errorf("expected MaxPages=0 (unlimited) when unset, got %d", cfg.Pagination.MaxPages)
 	}
 }
+
+// ─── source.fanout ────────────────────────────────────────────────────────────
+
+func TestLoad_FanOutAbsent_IsNoOp(t *testing.T) {
+	yaml := `
+source:
+  url: "https://api.example.com/v1/items/{page}/{limit}"
+pagination:
+  num_pages_path: "meta.totalPages"
+doris:
+  host: "http://doris-fe:8030"
+  database: "mydb"
+  table: "events"
+`
+	cfg, err := Load(writeTempConfig(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Source.FanOut != nil {
+		t.Errorf("expected Source.FanOut=nil when fanout block is absent, got %+v", cfg.Source.FanOut)
+	}
+}
+
+func TestLoad_FanOutValid_DefaultsApplied(t *testing.T) {
+	yaml := `
+source:
+  url: "https://api.example.com/v1/items/{item}/details"
+  data_path: "data.items"
+  fanout:
+    list_url: "https://api.example.com/v1/items"
+    list_data_path: "items"
+    item_field: "key"
+pagination:
+  num_pages_path: "meta.totalPages"
+doris:
+  host: "http://doris-fe:8030"
+  database: "mydb"
+  table: "events"
+`
+	cfg, err := Load(writeTempConfig(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Source.FanOut == nil {
+		t.Fatal("expected Source.FanOut to be non-nil")
+	}
+	if cfg.Source.FanOut.ItemPlaceholder != "item" {
+		t.Errorf("expected ItemPlaceholder default 'item', got %q", cfg.Source.FanOut.ItemPlaceholder)
+	}
+	// list_pagination was not configured, so it must remain the zero value
+	// rather than having page_number defaults silently applied.
+	if !cfg.Source.FanOut.ListPagination.IsZero() {
+		t.Errorf("expected ListPagination to remain zero-value when unset, got %+v", cfg.Source.FanOut.ListPagination)
+	}
+}
+
+func TestLoad_FanOutMissingListURL(t *testing.T) {
+	yaml := `
+source:
+  url: "https://api.example.com/v1/items/{item}/details"
+  fanout:
+    item_field: "key"
+pagination:
+  num_pages_path: "meta.totalPages"
+doris:
+  host: "http://doris-fe:8030"
+  database: "mydb"
+  table: "events"
+`
+	_, err := Load(writeTempConfig(t, yaml))
+	if err == nil {
+		t.Fatal("expected error for fanout without list_url")
+	}
+}
+
+func TestLoad_FanOutMissingItemField(t *testing.T) {
+	yaml := `
+source:
+  url: "https://api.example.com/v1/items/{item}/details"
+  fanout:
+    list_url: "https://api.example.com/v1/items"
+pagination:
+  num_pages_path: "meta.totalPages"
+doris:
+  host: "http://doris-fe:8030"
+  database: "mydb"
+  table: "events"
+`
+	_, err := Load(writeTempConfig(t, yaml))
+	if err == nil {
+		t.Fatal("expected error for fanout without item_field")
+	}
+}
+
+func TestLoad_FanOutMissingPlaceholderInSourceURL(t *testing.T) {
+	yaml := `
+source:
+  # Missing the {item} placeholder required by fanout.
+  url: "https://api.example.com/v1/items/details"
+  fanout:
+    list_url: "https://api.example.com/v1/items"
+    item_field: "key"
+pagination:
+  num_pages_path: "meta.totalPages"
+doris:
+  host: "http://doris-fe:8030"
+  database: "mydb"
+  table: "events"
+`
+	_, err := Load(writeTempConfig(t, yaml))
+	if err == nil {
+		t.Fatal("expected error when source.url is missing the fan-out placeholder")
+	}
+}
+
+func TestLoad_FanOutCustomPlaceholder(t *testing.T) {
+	yaml := `
+source:
+  url: "https://api.example.com/v1/items/{key}/details"
+  fanout:
+    list_url: "https://api.example.com/v1/items"
+    item_field: "key"
+    item_placeholder: "key"
+pagination:
+  num_pages_path: "meta.totalPages"
+doris:
+  host: "http://doris-fe:8030"
+  database: "mydb"
+  table: "events"
+`
+	cfg, err := Load(writeTempConfig(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Source.FanOut.ItemPlaceholder != "key" {
+		t.Errorf("expected ItemPlaceholder='key', got %q", cfg.Source.FanOut.ItemPlaceholder)
+	}
+}
+
+func TestLoad_FanOutListPaginationDefaultsAndValidation(t *testing.T) {
+	yaml := `
+source:
+  url: "https://api.example.com/v1/items/{item}/details"
+  fanout:
+    list_url: "https://api.example.com/v1/items"
+    item_field: "key"
+    list_pagination:
+      total_entries_path: "paging.total"
+      page_size: 500
+pagination:
+  num_pages_path: "meta.totalPages"
+doris:
+  host: "http://doris-fe:8030"
+  database: "mydb"
+  table: "events"
+`
+	cfg, err := Load(writeTempConfig(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	lp := cfg.Source.FanOut.ListPagination
+	if lp.Type != "page_number" {
+		t.Errorf("expected list_pagination.type default 'page_number', got %q", lp.Type)
+	}
+	if lp.StartPage != 1 {
+		t.Errorf("expected list_pagination.start_page default 1, got %d", lp.StartPage)
+	}
+}
+
+func TestLoad_FanOutListPaginationInvalid(t *testing.T) {
+	yaml := `
+source:
+  url: "https://api.example.com/v1/items/{item}/details"
+  fanout:
+    list_url: "https://api.example.com/v1/items"
+    item_field: "key"
+    list_pagination:
+      type: offset
+      # missing total_entries_path, required for offset pagination
+pagination:
+  num_pages_path: "meta.totalPages"
+doris:
+  host: "http://doris-fe:8030"
+  database: "mydb"
+  table: "events"
+`
+	_, err := Load(writeTempConfig(t, yaml))
+	if err == nil {
+		t.Fatal("expected error for invalid fanout.list_pagination")
+	}
+}
