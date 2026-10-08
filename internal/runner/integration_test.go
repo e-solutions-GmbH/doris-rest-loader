@@ -767,3 +767,199 @@ func TestIntegration_SourceFailureExhaustsRetries(t *testing.T) {
 		t.Errorf("expected no rows loaded on persistent failure, got %d", got)
 	}
 }
+
+// ─── 14. fan-out: list endpoint + N per-item detail endpoints ────────────────
+
+// TestIntegration_FanOut_ListPlusPerItemDetails models the "fan-out" shape:
+// a list endpoint enumerates identifiers, and one (independently paginated)
+// detail request is issued per identifier. All detail results must be
+// flattened and streamed into the same Doris target.
+func TestIntegration_FanOut_ListPlusPerItemDetails(t *testing.T) {
+	state := &dorisState{}
+	dorisSrv := newDorisServer(t, state)
+	defer dorisSrv.Close()
+
+	// List endpoint: single page, enumerates 3 identifiers.
+	listSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, map[string]any{
+			"items": []map[string]any{
+				{"key": "a"}, {"key": "b"}, {"key": "c"},
+			},
+		})
+	}))
+	defer listSrv.Close()
+
+	// Detail endpoint: path is /items/{item}/details?p=&ps=; each item has a
+	// single page of 2 entities, scoped by its own identifier so cross-item
+	// bleed-through would be detectable.
+	var mu sync.Mutex
+	seenItems := map[string]int{}
+	detailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		// expect: items/<item>/details
+		if len(parts) != 3 || parts[0] != "items" || parts[2] != "details" {
+			t.Errorf("detail mock: unexpected path %q", r.URL.Path)
+			http.Error(w, "bad path", http.StatusBadRequest)
+			return
+		}
+		item := parts[1]
+		mu.Lock()
+		seenItems[item]++
+		mu.Unlock()
+
+		writeJSON(w, map[string]any{
+			"paging": map[string]any{"total": float64(1)},
+			"items": []map[string]any{
+				{"id": item + "-1"},
+				{"id": item + "-2"},
+			},
+		})
+	}))
+	defer detailSrv.Close()
+
+	cfg := baseConfig(detailSrv.URL+"/items/{item}/details", dorisSrv.URL)
+	cfg.Source.DataPath = "items"
+	cfg.Source.FanOut = &config.FanOutConfig{
+		ListURL:         listSrv.URL,
+		ListDataPath:    "items",
+		ItemField:       "key",
+		ItemPlaceholder: "item",
+	}
+	cfg.Pagination = config.PaginationConfig{
+		Type:         "page_number",
+		Injection:    "query_params",
+		StartPage:    1,
+		PageParam:    "p",
+		LimitParam:   "ps",
+		PageSize:     2,
+		NumPagesPath: "paging.total",
+	}
+
+	if err := runIngestion(t, cfg); err != nil {
+		t.Fatalf("Run returned unexpected error: %v", err)
+	}
+
+	if got := state.rowCount(); got != 6 {
+		t.Errorf("expected 6 rows (3 items x 2 entities), got %d", got)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, item := range []string{"a", "b", "c"} {
+		if seenItems[item] != 1 {
+			t.Errorf("expected detail endpoint called exactly once for item %q, got %d", item, seenItems[item])
+		}
+	}
+
+	rows := state.snapshotRows()
+	gotIDs := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		if id, ok := row["id"].(string); ok {
+			gotIDs[id] = true
+		}
+	}
+	for _, want := range []string{"a-1", "a-2", "b-1", "b-2", "c-1", "c-2"} {
+		if !gotIDs[want] {
+			t.Errorf("expected row with id %q, got ids %v", want, gotIDs)
+		}
+	}
+}
+
+// TestIntegration_FanOut_OneItemFailsOthersSucceed verifies that a single
+// failing fan-out item is logged/aggregated but does not abort the whole run:
+// the other items must still be processed and loaded.
+func TestIntegration_FanOut_OneItemFailsOthersSucceed(t *testing.T) {
+	state := &dorisState{}
+	dorisSrv := newDorisServer(t, state)
+	defer dorisSrv.Close()
+
+	listSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, map[string]any{
+			"items": []map[string]any{{"key": "good"}, {"key": "bad"}},
+		})
+	}))
+	defer listSrv.Close()
+
+	detailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/bad/") {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]any{
+			"paging": map[string]any{"total": float64(1)},
+			"items":  []map[string]any{{"id": "good-1"}},
+		})
+	}))
+	defer detailSrv.Close()
+
+	cfg := baseConfig(detailSrv.URL+"/items/{item}/details", dorisSrv.URL)
+	cfg.Source.DataPath = "items"
+	cfg.Threading.Retry = config.RetryConfig{MaxAttempts: 1}
+	cfg.Source.FanOut = &config.FanOutConfig{
+		ListURL:         listSrv.URL,
+		ListDataPath:    "items",
+		ItemField:       "key",
+		ItemPlaceholder: "item",
+	}
+	cfg.Pagination = config.PaginationConfig{
+		Type:         "page_number",
+		Injection:    "query_params",
+		StartPage:    1,
+		PageParam:    "p",
+		LimitParam:   "ps",
+		PageSize:     10,
+		NumPagesPath: "paging.total",
+	}
+
+	err := runIngestion(t, cfg)
+	if err == nil {
+		t.Fatal("expected an aggregate error due to the failing item, got nil")
+	}
+
+	if got := state.rowCount(); got != 1 {
+		t.Errorf("expected 1 row from the succeeding item, got %d", got)
+	}
+}
+
+// TestIntegration_FanOut_NoItems verifies that an empty list response (no
+// fan-out items) completes successfully without issuing any detail requests.
+func TestIntegration_FanOut_NoItems(t *testing.T) {
+	state := &dorisState{}
+	dorisSrv := newDorisServer(t, state)
+	defer dorisSrv.Close()
+
+	listSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, map[string]any{"items": []map[string]any{}})
+	}))
+	defer listSrv.Close()
+
+	var detailCalls int32
+	detailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&detailCalls, 1)
+		writeJSON(w, map[string]any{"items": []map[string]any{}})
+	}))
+	defer detailSrv.Close()
+
+	cfg := baseConfig(detailSrv.URL+"/items/{item}/details", dorisSrv.URL)
+	cfg.Source.DataPath = "items"
+	cfg.Source.FanOut = &config.FanOutConfig{
+		ListURL:         listSrv.URL,
+		ListDataPath:    "items",
+		ItemField:       "key",
+		ItemPlaceholder: "item",
+	}
+	cfg.Pagination = config.PaginationConfig{
+		Type: "page_number", Injection: "query_params", StartPage: 1,
+		PageParam: "p", LimitParam: "ps", PageSize: 10, NumPagesPath: "paging.total",
+	}
+
+	if err := runIngestion(t, cfg); err != nil {
+		t.Fatalf("Run returned unexpected error: %v", err)
+	}
+	if got := atomic.LoadInt32(&detailCalls); got != 0 {
+		t.Errorf("expected no detail requests when the list has no items, got %d", got)
+	}
+	if got := state.rowCount(); got != 0 {
+		t.Errorf("expected no rows loaded, got %d", got)
+	}
+}
