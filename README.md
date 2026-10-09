@@ -443,6 +443,7 @@ doris-rest-loader/
 │   ├── config/                   # YAML config structs, loader, defaults, validation
 │   ├── doris/                    # Doris Stream Load client
 │   ├── fanout/                   # Fan-out item extraction and URL substitution
+│   ├── fanout/                   # Fan-out item extraction and URL substitution
 │   ├── fetcher/                  # HTTP fetcher with retry/backoff
 │   ├── flattener/                # Entity flattening and field selection
 │   ├── jsonpath/                 # Minimal dot-notation JSON path resolver (no deps)
