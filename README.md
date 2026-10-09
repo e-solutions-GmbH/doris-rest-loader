@@ -65,6 +65,10 @@ source:
     list_data_path: "items"
     item_field: "key"
     item_placeholder: "item"
+    # Optional. Injects the fan-out item's value under this column name into
+    # every entity extracted from that item's detail response(s). Use this
+    # when the detail endpoint doesn't echo the identifier back in its body.
+    item_column: "item_key"
 
 # ── Authentication ─────────────────────────────────────────────────────────────
 auth:
@@ -204,6 +208,21 @@ of the single-stage paginated fetch:
   is logged and skipped rather than aborting the whole run (same
   fail-and-continue contract as per-page failures).
 
+  Some detail endpoints are scoped by the fan-out identifier (via path or
+  query parameter) but don't redundantly repeat that identifier anywhere in
+  the response body (e.g. SonarQube's
+  `/api/measures/search_history?component={item}&...`, which returns measure
+  history but no `component`/project-key field). Without the identifier,
+  rows from different items would be indistinguishable once flattened and
+  streamed to Doris. Set the optional `fanout.item_column` to a column name
+  to have the runner inject the current fan-out item's value under that key
+  into every entity extracted from that item's detail response(s) — on every
+  page, not just the first — before flattening. This mirrors how
+  `flattening.raw_json_column` already injects a synthetic column today; if
+  an extracted entity already has a key matching `item_column`, the injected
+  value overwrites it. Unset (default) means no injection, fully backward
+  compatible.
+
 ```yaml
 source:
   # {item} is substituted per fan-out item; may be combined with the
@@ -224,6 +243,11 @@ source:
     item_field: "key"
     # Placeholder name substituted into source.url for each item (default: "item").
     item_placeholder: "item"
+    # Optional. When set, injects the fan-out item's value under this column
+    # name into every entity extracted from that item's detail response(s),
+    # before flattening. Use this when the detail endpoint doesn't echo the
+    # identifier back in its response body (default: unset, no injection).
+    item_column: "item_key"
     # Optional: pagination for the list fetch itself. Omit if the list
     # endpoint returns everything in a single response. Same schema/semantics
     # as the top-level `pagination` block.
@@ -418,6 +442,7 @@ doris-rest-loader/
 │   ├── auth/                     # Auth adapters (noauth, basic, bearer, preflight, oauth2)
 │   ├── config/                   # YAML config structs, loader, defaults, validation
 │   ├── doris/                    # Doris Stream Load client
+│   ├── fanout/                   # Fan-out item extraction and URL substitution
 │   ├── fanout/                   # Fan-out item extraction and URL substitution
 │   ├── fetcher/                  # HTTP fetcher with retry/backoff
 │   ├── flattener/                # Entity flattening and field selection
