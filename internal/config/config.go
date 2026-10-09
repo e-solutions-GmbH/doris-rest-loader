@@ -105,6 +105,15 @@ type FanOutConfig struct {
 	// same schema/semantics as the top-level `pagination` block. Omit if the
 	// list endpoint returns everything in a single response.
 	ListPagination PaginationConfig `yaml:"list_pagination"`
+	// ItemColumn, when non-empty, injects the current fan-out item's value
+	// under this column name into every entity extracted from that item's
+	// detail response(s), before flattening — analogous to how
+	// flattening.raw_json_column injects a synthetic column today. Useful
+	// when the detail endpoint's response body doesn't itself echo back the
+	// identifier used to request it, so there'd otherwise be no column to
+	// join the row back to its parent item. Optional; unset (default) means
+	// no injection, fully backward compatible.
+	ItemColumn string `yaml:"item_column"`
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
