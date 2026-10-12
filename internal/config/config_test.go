@@ -428,6 +428,36 @@ doris:
 	if !cfg.Source.FanOut.ListPagination.IsZero() {
 		t.Errorf("expected ListPagination to remain zero-value when unset, got %+v", cfg.Source.FanOut.ListPagination)
 	}
+	// item_column is purely optional; absent means no injection.
+	if cfg.Source.FanOut.ItemColumn != "" {
+		t.Errorf("expected ItemColumn='' by default, got %q", cfg.Source.FanOut.ItemColumn)
+	}
+}
+
+func TestLoad_FanOutItemColumn(t *testing.T) {
+	yaml := `
+source:
+  url: "https://api.example.com/v1/items/{item}/details"
+  data_path: "measures"
+  fanout:
+    list_url: "https://api.example.com/v1/items"
+    list_data_path: "items"
+    item_field: "key"
+    item_column: "project_key"
+pagination:
+  num_pages_path: "meta.totalPages"
+doris:
+  host: "http://doris-fe:8030"
+  database: "mydb"
+  table: "events"
+`
+	cfg, err := Load(writeTempConfig(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Source.FanOut.ItemColumn != "project_key" {
+		t.Errorf("expected ItemColumn=project_key, got %q", cfg.Source.FanOut.ItemColumn)
+	}
 }
 
 func TestLoad_FanOutMissingListURL(t *testing.T) {

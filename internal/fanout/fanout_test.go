@@ -103,6 +103,47 @@ func TestExtractItems_NoDuplicatesInOutput(t *testing.T) {
 	}
 }
 
+func TestInjectItemColumn(t *testing.T) {
+	t.Run("injects column into every entity", func(t *testing.T) {
+		entities := []map[string]any{
+			{"metric": "branch_coverage"},
+			{"metric": "conditions_to_cover"},
+		}
+		InjectItemColumn(entities, "project_key", "my-project")
+
+		for i, e := range entities {
+			if got := e["project_key"]; got != "my-project" {
+				t.Errorf("entity %d: expected project_key=%q, got %v", i, "my-project", got)
+			}
+		}
+	})
+
+	t.Run("overwrites pre-existing key with same name", func(t *testing.T) {
+		entities := []map[string]any{
+			{"project_key": "stale-value", "metric": "x"},
+		}
+		InjectItemColumn(entities, "project_key", "fresh-value")
+
+		if got := entities[0]["project_key"]; got != "fresh-value" {
+			t.Errorf("expected project_key to be overwritten to %q, got %v", "fresh-value", got)
+		}
+	})
+
+	t.Run("empty column is a no-op", func(t *testing.T) {
+		entities := []map[string]any{
+			{"metric": "branch_coverage"},
+		}
+		InjectItemColumn(entities, "", "my-project")
+
+		if _, ok := entities[0][""]; ok {
+			t.Errorf("expected no key injected when column is empty, got %v", entities[0])
+		}
+		if len(entities[0]) != 1 {
+			t.Errorf("expected entity unmodified, got %v", entities[0])
+		}
+	})
+}
+
 func TestBuildItemURL(t *testing.T) {
 	tests := []struct {
 		name        string

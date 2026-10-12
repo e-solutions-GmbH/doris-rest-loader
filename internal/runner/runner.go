@@ -329,6 +329,7 @@ func (r *Runner) runFanOutDryRun(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("runner: extract entities from first page: %w", err)
 	}
+	fanout.InjectItemColumn(firstEntities, fo.ItemColumn, firstItem)
 
 	flatEntities, err := r.flat.FlattenAll(firstEntities)
 	if err != nil {
@@ -485,6 +486,7 @@ func (r *Runner) processFanOutItem(ctx context.Context, item string) error {
 	if err != nil {
 		return fmt.Errorf("extract entities from first page: %w", err)
 	}
+	fanout.InjectItemColumn(firstEntities, r.cfg.Source.FanOut.ItemColumn, item)
 
 	flatFirst, err := r.flat.FlattenAll(firstEntities)
 	if err != nil {
@@ -508,7 +510,7 @@ func (r *Runner) processFanOutItem(ctx context.Context, item string) error {
 	}
 
 	for pageNum := pageInfo.StartPage + 1; pageNum <= pageInfo.TotalPages; pageNum++ {
-		res := r.fetchItemPage(ctx, itemURL, pageNum)
+		res := r.fetchItemPage(ctx, itemURL, item, pageNum)
 		if res.err != nil {
 			return fmt.Errorf("item page %d: %w", pageNum, res.err)
 		}
@@ -525,8 +527,10 @@ func (r *Runner) processFanOutItem(ctx context.Context, item string) error {
 // fetchItemPage fetches a single detail page for a fan-out item, extracts its
 // entities, flattens them, and returns a pageResult (which may carry an error
 // instead of entities). itemURL is the already item-substituted base URL for
-// this item (before pagination placeholders are applied).
-func (r *Runner) fetchItemPage(ctx context.Context, itemURL string, pageNum int) pageResult {
+// this item (before pagination placeholders are applied). item is the raw
+// fan-out item value, used to inject fanout.item_column (when configured)
+// into every entity extracted from this page.
+func (r *Runner) fetchItemPage(ctx context.Context, itemURL, item string, pageNum int) pageResult {
 	pageURL, err := r.pagAdapter.BuildURL(itemURL, pageNum)
 	if err != nil {
 		return pageResult{pageNum: pageNum,
@@ -544,6 +548,7 @@ func (r *Runner) fetchItemPage(ctx context.Context, itemURL string, pageNum int)
 		return pageResult{pageNum: pageNum,
 			err: fmt.Errorf("extract entities from page %d: %w", pageNum, err)}
 	}
+	fanout.InjectItemColumn(entities, r.cfg.Source.FanOut.ItemColumn, item)
 
 	flatEntities, err := r.flat.FlattenAll(entities)
 	if err != nil {

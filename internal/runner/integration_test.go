@@ -865,6 +865,91 @@ func TestIntegration_FanOut_ListPlusPerItemDetails(t *testing.T) {
 	}
 }
 
+// TestIntegration_FanOut_ItemColumn verifies the fr2.md SonarQube use case:
+// the detail endpoint's response body does not echo back the fan-out item
+// identifier anywhere (e.g. SonarQube's search_history response contains no
+// "component"/project-key field). With fanout.item_column configured, every
+// entity extracted from that item's detail response(s) — across all of that
+// item's paginated pages, not just the first — must carry the fan-out item's
+// value under that column.
+func TestIntegration_FanOut_ItemColumn(t *testing.T) {
+	state := &dorisState{}
+	dorisSrv := newDorisServer(t, state)
+	defer dorisSrv.Close()
+
+	listSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, map[string]any{
+			"items": []map[string]any{
+				{"key": "proj-a"}, {"key": "proj-b"},
+			},
+		})
+	}))
+	defer listSrv.Close()
+
+	// Detail endpoint: path is /items/{item}/details?p=&ps=; each item has 2
+	// pages of 1 entity each, and the entity body deliberately carries no
+	// field identifying which item it came from — mirroring SonarQube's
+	// search_history response shape.
+	detailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("p")
+		writeJSON(w, map[string]any{
+			"paging": map[string]any{"total": float64(2)},
+			"items": []map[string]any{
+				{"metric": "branch_coverage", "page": page},
+			},
+		})
+	}))
+	defer detailSrv.Close()
+
+	cfg := baseConfig(detailSrv.URL+"/items/{item}/details", dorisSrv.URL)
+	cfg.Source.DataPath = "items"
+	cfg.Source.FanOut = &config.FanOutConfig{
+		ListURL:         listSrv.URL,
+		ListDataPath:    "items",
+		ItemField:       "key",
+		ItemPlaceholder: "item",
+		ItemColumn:      "project_key",
+	}
+	cfg.Pagination = config.PaginationConfig{
+		Type:         "page_number",
+		Injection:    "query_params",
+		StartPage:    1,
+		PageParam:    "p",
+		LimitParam:   "ps",
+		PageSize:     1,
+		NumPagesPath: "paging.total",
+	}
+
+	if err := runIngestion(t, cfg); err != nil {
+		t.Fatalf("Run returned unexpected error: %v", err)
+	}
+
+	// 2 items x 2 pages x 1 entity = 4 rows.
+	if got := state.rowCount(); got != 4 {
+		t.Errorf("expected 4 rows (2 items x 2 pages), got %d", got)
+	}
+
+	rows := state.snapshotRows()
+	gotByItem := map[string]int{"proj-a": 0, "proj-b": 0}
+	for _, row := range rows {
+		pk, ok := row["project_key"].(string)
+		if !ok || pk == "" {
+			t.Errorf("row missing/empty project_key column: %v", row)
+			continue
+		}
+		if _, known := gotByItem[pk]; !known {
+			t.Errorf("row has unexpected project_key %q: %v", pk, row)
+			continue
+		}
+		gotByItem[pk]++
+	}
+	for item, count := range gotByItem {
+		if count != 2 {
+			t.Errorf("expected 2 rows with project_key=%q (one per page), got %d", item, count)
+		}
+	}
+}
+
 // TestIntegration_FanOut_OneItemFailsOthersSucceed verifies that a single
 // failing fan-out item is logged/aggregated but does not abort the whole run:
 // the other items must still be processed and loaded.
