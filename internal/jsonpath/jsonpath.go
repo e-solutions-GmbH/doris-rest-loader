@@ -83,3 +83,28 @@ func GetString(data map[string]any, path string) (string, error) {
 	}
 	return fmt.Sprintf("%v", val), nil
 }
+
+// GetBool navigates to the value at path and converts it to bool.
+//
+// Supports the following value types produced by encoding/json.Unmarshal:
+//   - bool (standard JSON boolean)
+//   - string (parsed with strconv.ParseBool, e.g. "true"/"false")
+func GetBool(data map[string]any, path string) (bool, error) {
+	val, err := Get(data, path)
+	if err != nil {
+		return false, err
+	}
+
+	switch v := val.(type) {
+	case bool:
+		return v, nil
+	case string:
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return false, fmt.Errorf("jsonpath: value at %q is string %q, cannot convert to bool: %w", path, v, err)
+		}
+		return b, nil
+	default:
+		return false, fmt.Errorf("jsonpath: value at %q has type %T, cannot convert to bool", path, val)
+	}
+}

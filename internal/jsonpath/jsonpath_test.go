@@ -127,3 +127,41 @@ func TestGetString_NonStringValue(t *testing.T) {
 		t.Error("expected non-empty string for float64 value")
 	}
 }
+
+func TestGetBool_BoolValue(t *testing.T) {
+	data := map[string]any{"isLastPage": true}
+	b, err := GetBool(data, "isLastPage")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !b {
+		t.Error("expected true")
+	}
+}
+
+func TestGetBool_StringValue(t *testing.T) {
+	data := map[string]any{"isLastPage": "false"}
+	b, err := GetBool(data, "isLastPage")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if b {
+		t.Error("expected false")
+	}
+}
+
+func TestGetBool_InvalidString(t *testing.T) {
+	data := map[string]any{"isLastPage": "not-a-bool"}
+	_, err := GetBool(data, "isLastPage")
+	if err == nil {
+		t.Fatal("expected error for non-boolean string")
+	}
+}
+
+func TestGetBool_UnsupportedType(t *testing.T) {
+	data := map[string]any{"isLastPage": float64(1)}
+	_, err := GetBool(data, "isLastPage")
+	if err == nil {
+		t.Fatal("expected error for unsupported type")
+	}
+}

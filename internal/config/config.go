@@ -87,33 +87,77 @@ type SourceConfig struct {
 
 // FanOutConfig defines the "list, then fan out a parameterised call per list
 // entry" source mode: a list endpoint enumerates parent entities/identifiers,
-// and one detail request (source.url, with the fan-out item substituted in)
-// is issued per identifier.
+// and one detail request (source.url, with the fan-out item's fields
+// substituted in) is issued per identifier.
+//
+// BREAKING CHANGE: the former ItemField/ItemPlaceholder/ItemColumn keys have
+// been unified into the single polymorphic ItemFields key. There is no
+// backward-compatible alias for the old keys.
 type FanOutConfig struct {
 	// ListURL is the endpoint that enumerates the parent entities (required).
 	ListURL string `yaml:"list_url"`
 	// ListDataPath is a dot-notation path to the array of parent entities in
 	// the list response. Defaults to the response root.
 	ListDataPath string `yaml:"list_data_path"`
-	// ItemField is the dot-notation path (within one list entity) to the
-	// identifier value to fan out on (required).
-	ItemField string `yaml:"item_field"`
-	// ItemPlaceholder is the placeholder name substituted into source.url for
-	// each item (default: "item", i.e. "{item}" in source.url).
-	ItemPlaceholder string `yaml:"item_placeholder"`
+	// ItemFields selects one or more dot-notation fields (within one list
+	// entity) to fan out on (required, non-empty). Each selected field is
+	// both a named URL placeholder substituted into source.url (and, when
+	// SubList is configured, into sub_list.list_url) and an output column
+	// auto-injected into every entity extracted from that item's detail
+	// response(s) — there is no separate item_column key. See FieldSpec for
+	// the supported YAML shapes.
+	ItemFields FieldSpec `yaml:"item_fields"`
 	// ListPagination optionally paginates the list fetch itself, using the
 	// same schema/semantics as the top-level `pagination` block. Omit if the
 	// list endpoint returns everything in a single response.
 	ListPagination PaginationConfig `yaml:"list_pagination"`
-	// ItemColumn, when non-empty, injects the current fan-out item's value
-	// under this column name into every entity extracted from that item's
-	// detail response(s), before flattening — analogous to how
-	// flattening.raw_json_column injects a synthetic column today. Useful
-	// when the detail endpoint's response body doesn't itself echo back the
-	// identifier used to request it, so there'd otherwise be no column to
-	// join the row back to its parent item. Optional; unset (default) means
-	// no injection, fully backward compatible.
-	ItemColumn string `yaml:"item_column"`
+	// SubList, when set, fetches a per-item paginated sub-list (e.g. a
+	// commit history) before issuing the item's detail request, extracting
+	// additional field values from the first entity of the first page and
+	// the last entity of the last page, and merging those into the item's
+	// values (available as URL placeholders and auto-injected columns,
+	// exactly like ItemFields). Optional; unset (default) means no sub-list
+	// stage, fully backward compatible with the plain list/fan-out mode.
+	SubList *SubListConfig `yaml:"sub_list"`
+}
+
+// SubListConfig defines a per-fan-out-item nested paginated sub-list fetch,
+// used to derive additional item values (e.g. the first and last commit of a
+// repository's history) before the item's main detail request is issued.
+//
+// The sub-list fetch reuses the same fetcher/auth/retry configuration as the
+// rest of the run; it is not a separate auth context. Walking the sub-list's
+// pages happens sequentially within the fan-out item's own goroutine —
+// concurrency is only ever applied across fan-out items
+// (threading.max_goroutines), never across a single item's sub-list pages.
+//
+// An empty sub-list result (zero entities on the first/last page) is treated
+// as a hard error for that fan-out item, propagated through the same
+// per-item failure/aggregation mechanism as any other item-level failure —
+// there is no silent empty-placeholder fallback.
+type SubListConfig struct {
+	// ListURL is the per-item sub-list endpoint (required). It may reference
+	// any of the outer item's ItemFields placeholders (e.g.
+	// "https://api.example.com/projects/{key}/repos/{slug}/commits"); those
+	// are substituted before the sub-list fetch runs.
+	ListURL string `yaml:"list_url"`
+	// ListDataPath is a dot-notation path to the array of entities in the
+	// sub-list response. Defaults to the response root.
+	ListDataPath string `yaml:"list_data_path"`
+	// Pagination optionally paginates the sub-list fetch, using the same
+	// schema/semantics as the top-level `pagination` block. Omit if the
+	// sub-list endpoint returns everything in a single response.
+	Pagination PaginationConfig `yaml:"pagination"`
+	// FirstItemFields selects one or more dot-notation fields, extracted
+	// from the first entity of the sub-list's first page (required,
+	// non-empty). Uses the same FieldSpec shapes as ItemFields, and each
+	// selected field is likewise auto-injected as an output column.
+	FirstItemFields FieldSpec `yaml:"first_item_fields"`
+	// LastItemFields selects one or more dot-notation fields, extracted
+	// from the last entity of the sub-list's last page (required,
+	// non-empty). Uses the same FieldSpec shapes as ItemFields, and each
+	// selected field is likewise auto-injected as an output column.
+	LastItemFields FieldSpec `yaml:"last_item_fields"`
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -149,7 +193,7 @@ type AuthConfig struct {
 // PaginationConfig defines how the tool navigates through paginated responses.
 type PaginationConfig struct {
 	// Type selects the pagination strategy.
-	// Supported: page_number (default), offset, cursor (stub).
+	// Supported: page_number (default), offset, cursor.
 	Type string `yaml:"type"`
 	// Injection defines how pagination parameters are passed to the API.
 	// Supported: path (default, implemented), query_params (implemented), body (stub).
@@ -174,8 +218,14 @@ type PaginationConfig struct {
 	NumPagesPath string `yaml:"num_pages_path"`
 	// TotalEntriesPath is the dot-notation path to the total entry count in the response.
 	TotalEntriesPath string `yaml:"total_entries_path"`
-	// CursorPath is the dot-notation path to the next cursor value in the response (cursor stub).
+	// CursorPath is the dot-notation path to the next cursor value in the response.
 	CursorPath string `yaml:"cursor_path"`
+	// LastPagePath is an optional dot-notation path to a boolean "is last
+	// page" signal in the response (e.g. Bitbucket's "isLastPage"), used by
+	// the cursor adapter to terminate pagination. When empty, the cursor
+	// adapter instead terminates as soon as no cursor value is present in
+	// the response (i.e. CursorPath resolves to nothing / an empty value).
+	LastPagePath string `yaml:"last_page_path"`
 }
 
 // IsZero reports whether p is the zero-value PaginationConfig, i.e. nothing
@@ -306,9 +356,6 @@ func applyDefaults(cfg *Config) {
 	// fan_out is purely additive: only touch it (and its optional nested
 	// list_pagination) when the block is actually present in the config.
 	if cfg.Source.FanOut != nil {
-		if cfg.Source.FanOut.ItemPlaceholder == "" {
-			cfg.Source.FanOut.ItemPlaceholder = "item"
-		}
 		// list_pagination itself is optional ("omit if the list endpoint
 		// returns everything in a single response"); only apply defaults
 		// when the user configured at least one of its fields. Otherwise
@@ -316,6 +363,14 @@ func applyDefaults(cfg *Config) {
 		// absent rather than requiring e.g. total_entries_path.
 		if !cfg.Source.FanOut.ListPagination.IsZero() {
 			applyPaginationDefaults(&cfg.Source.FanOut.ListPagination)
+		}
+		// sub_list is likewise optional, and its own pagination block
+		// follows the same "only apply defaults if actually configured"
+		// rule as list_pagination above.
+		if sl := cfg.Source.FanOut.SubList; sl != nil {
+			if !sl.Pagination.IsZero() {
+				applyPaginationDefaults(&sl.Pagination)
+			}
 		}
 	}
 
@@ -423,17 +478,66 @@ func validateFanOut(s SourceConfig) error {
 	if fo.ListURL == "" {
 		return fmt.Errorf("source.fanout.list_url is required")
 	}
-	if fo.ItemField == "" {
-		return fmt.Errorf("source.fanout.item_field is required")
+	if fo.ItemFields.IsEmpty() {
+		return fmt.Errorf("source.fanout.item_fields is required")
 	}
-	placeholder := "{" + fo.ItemPlaceholder + "}"
-	if !strings.Contains(s.URL, placeholder) {
-		return fmt.Errorf(
-			"source.url must contain the fan-out placeholder %q when source.fanout is configured", placeholder)
+
+	seen := make(map[string]string) // placeholder -> originating field spec, for duplicate detection
+	if err := requirePlaceholdersInURL(s.URL, fo.ItemFields, "source.fanout.item_fields", seen); err != nil {
+		return err
 	}
+
 	if !fo.ListPagination.IsZero() {
 		if err := validatePagination(fo.ListPagination); err != nil {
 			return fmt.Errorf("source.fanout.list_pagination: %w", err)
+		}
+	}
+
+	if sl := fo.SubList; sl != nil {
+		if sl.ListURL == "" {
+			return fmt.Errorf("source.fanout.sub_list.list_url is required")
+		}
+		if sl.FirstItemFields.IsEmpty() {
+			return fmt.Errorf("source.fanout.sub_list.first_item_fields is required")
+		}
+		if sl.LastItemFields.IsEmpty() {
+			return fmt.Errorf("source.fanout.sub_list.last_item_fields is required")
+		}
+		if err := requirePlaceholdersInURL(s.URL, sl.FirstItemFields, "source.fanout.sub_list.first_item_fields", seen); err != nil {
+			return err
+		}
+		if err := requirePlaceholdersInURL(s.URL, sl.LastItemFields, "source.fanout.sub_list.last_item_fields", seen); err != nil {
+			return err
+		}
+		if !sl.Pagination.IsZero() {
+			if err := validatePagination(sl.Pagination); err != nil {
+				return fmt.Errorf("source.fanout.sub_list.pagination: %w", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// requirePlaceholdersInURL verifies that every placeholder named by spec
+// appears as "{placeholder}" in url, and records each placeholder name in
+// seen (keyed by originating field-spec label) to catch duplicate
+// placeholder names across item_fields/first_item_fields/last_item_fields —
+// all of which merge into one values map per fan-out item, so a collision
+// would silently let one field's value overwrite another's.
+func requirePlaceholdersInURL(url string, spec FieldSpec, label string, seen map[string]string) error {
+	for _, entry := range spec {
+		if prevLabel, ok := seen[entry.Placeholder]; ok && prevLabel != label {
+			return fmt.Errorf(
+				"placeholder %q is used by both %s and %s; placeholder names must be unique across item_fields, sub_list.first_item_fields, and sub_list.last_item_fields",
+				entry.Placeholder, prevLabel, label)
+		}
+		seen[entry.Placeholder] = label
+
+		placeholder := "{" + entry.Placeholder + "}"
+		if !strings.Contains(url, placeholder) {
+			return fmt.Errorf(
+				"source.url must contain the fan-out placeholder %q (from %s)", placeholder, label)
 		}
 	}
 	return nil

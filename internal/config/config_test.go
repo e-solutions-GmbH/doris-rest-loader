@@ -400,12 +400,12 @@ doris:
 func TestLoad_FanOutValid_DefaultsApplied(t *testing.T) {
 	yaml := `
 source:
-  url: "https://api.example.com/v1/items/{item}/details"
+  url: "https://api.example.com/v1/items/{key}/details"
   data_path: "data.items"
   fanout:
     list_url: "https://api.example.com/v1/items"
     list_data_path: "items"
-    item_field: "key"
+    item_fields: "key"
 pagination:
   num_pages_path: "meta.totalPages"
 doris:
@@ -420,30 +420,32 @@ doris:
 	if cfg.Source.FanOut == nil {
 		t.Fatal("expected Source.FanOut to be non-nil")
 	}
-	if cfg.Source.FanOut.ItemPlaceholder != "item" {
-		t.Errorf("expected ItemPlaceholder default 'item', got %q", cfg.Source.FanOut.ItemPlaceholder)
+	if len(cfg.Source.FanOut.ItemFields) != 1 ||
+		cfg.Source.FanOut.ItemFields[0].Placeholder != "key" ||
+		cfg.Source.FanOut.ItemFields[0].Path != "key" {
+		t.Errorf("expected ItemFields=[{key key}], got %+v", cfg.Source.FanOut.ItemFields)
 	}
 	// list_pagination was not configured, so it must remain the zero value
 	// rather than having page_number defaults silently applied.
 	if !cfg.Source.FanOut.ListPagination.IsZero() {
 		t.Errorf("expected ListPagination to remain zero-value when unset, got %+v", cfg.Source.FanOut.ListPagination)
 	}
-	// item_column is purely optional; absent means no injection.
-	if cfg.Source.FanOut.ItemColumn != "" {
-		t.Errorf("expected ItemColumn='' by default, got %q", cfg.Source.FanOut.ItemColumn)
+	// sub_list is purely optional; absent means no sub-list stage.
+	if cfg.Source.FanOut.SubList != nil {
+		t.Errorf("expected SubList=nil by default, got %+v", cfg.Source.FanOut.SubList)
 	}
 }
 
-func TestLoad_FanOutItemColumn(t *testing.T) {
+func TestLoad_FanOutItemFieldsMapping(t *testing.T) {
 	yaml := `
 source:
-  url: "https://api.example.com/v1/items/{item}/details"
+  url: "https://api.example.com/v1/items/{project_key}/details"
   data_path: "measures"
   fanout:
     list_url: "https://api.example.com/v1/items"
     list_data_path: "items"
-    item_field: "key"
-    item_column: "project_key"
+    item_fields:
+      project_key: "key"
 pagination:
   num_pages_path: "meta.totalPages"
 doris:
@@ -455,8 +457,10 @@ doris:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Source.FanOut.ItemColumn != "project_key" {
-		t.Errorf("expected ItemColumn=project_key, got %q", cfg.Source.FanOut.ItemColumn)
+	if len(cfg.Source.FanOut.ItemFields) != 1 ||
+		cfg.Source.FanOut.ItemFields[0].Placeholder != "project_key" ||
+		cfg.Source.FanOut.ItemFields[0].Path != "key" {
+		t.Errorf("expected ItemFields=[{project_key key}], got %+v", cfg.Source.FanOut.ItemFields)
 	}
 }
 
@@ -465,7 +469,7 @@ func TestLoad_FanOutMissingListURL(t *testing.T) {
 source:
   url: "https://api.example.com/v1/items/{item}/details"
   fanout:
-    item_field: "key"
+    item_fields: "item"
 pagination:
   num_pages_path: "meta.totalPages"
 doris:
@@ -479,7 +483,7 @@ doris:
 	}
 }
 
-func TestLoad_FanOutMissingItemField(t *testing.T) {
+func TestLoad_FanOutMissingItemFields(t *testing.T) {
 	yaml := `
 source:
   url: "https://api.example.com/v1/items/{item}/details"
@@ -494,7 +498,7 @@ doris:
 `
 	_, err := Load(writeTempConfig(t, yaml))
 	if err == nil {
-		t.Fatal("expected error for fanout without item_field")
+		t.Fatal("expected error for fanout without item_fields")
 	}
 }
 
@@ -505,7 +509,7 @@ source:
   url: "https://api.example.com/v1/items/details"
   fanout:
     list_url: "https://api.example.com/v1/items"
-    item_field: "key"
+    item_fields: "key"
 pagination:
   num_pages_path: "meta.totalPages"
 doris:
@@ -525,8 +529,8 @@ source:
   url: "https://api.example.com/v1/items/{key}/details"
   fanout:
     list_url: "https://api.example.com/v1/items"
-    item_field: "key"
-    item_placeholder: "key"
+    item_fields:
+      key: "key"
 pagination:
   num_pages_path: "meta.totalPages"
 doris:
@@ -538,8 +542,8 @@ doris:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Source.FanOut.ItemPlaceholder != "key" {
-		t.Errorf("expected ItemPlaceholder='key', got %q", cfg.Source.FanOut.ItemPlaceholder)
+	if len(cfg.Source.FanOut.ItemFields) != 1 || cfg.Source.FanOut.ItemFields[0].Placeholder != "key" {
+		t.Errorf("expected ItemFields placeholder 'key', got %+v", cfg.Source.FanOut.ItemFields)
 	}
 }
 
@@ -549,7 +553,7 @@ source:
   url: "https://api.example.com/v1/items/{item}/details"
   fanout:
     list_url: "https://api.example.com/v1/items"
-    item_field: "key"
+    item_fields: "item"
     list_pagination:
       total_entries_path: "paging.total"
       page_size: 500
@@ -579,7 +583,7 @@ source:
   url: "https://api.example.com/v1/items/{item}/details"
   fanout:
     list_url: "https://api.example.com/v1/items"
-    item_field: "key"
+    item_fields: "item"
     list_pagination:
       type: offset
       # missing total_entries_path, required for offset pagination

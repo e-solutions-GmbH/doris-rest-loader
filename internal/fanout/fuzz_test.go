@@ -1,7 +1,7 @@
 // fuzz_test.go stress-tests fan-out placeholder substitution with Go's native
 // fuzzing engine (go test -fuzz). URL templates come from user configuration,
 // so BuildItemURL must handle arbitrary strings without panicking and must
-// always substitute every occurrence of the placeholder.
+// always substitute every occurrence of every placeholder.
 package fanout
 
 import (
@@ -25,17 +25,17 @@ func FuzzBuildItemURL(f *testing.F) {
 	f.Fuzz(func(t *testing.T, urlTemplate, placeholder, item string) {
 		if placeholder == "" {
 			// Empty placeholder name produces the "{}" token; still must not panic.
-			_ = BuildItemURL(urlTemplate, placeholder, item)
+			_ = BuildItemURL(urlTemplate, Values{placeholder: item})
 			return
 		}
 
-		out := BuildItemURL(urlTemplate, placeholder, item)
+		out := BuildItemURL(urlTemplate, Values{placeholder: item})
 
 		token := "{" + placeholder + "}"
 		// If the item value doesn't itself reintroduce the placeholder token,
 		// every occurrence of the token in the template must have been replaced.
 		if !strings.Contains(item, token) && strings.Contains(out, token) {
-			t.Fatalf("BuildItemURL(%q, %q, %q) = %q still contains unsubstituted placeholder %q",
+			t.Fatalf("BuildItemURL(%q, {%q: %q}) = %q still contains unsubstituted placeholder %q",
 				urlTemplate, placeholder, item, out, token)
 		}
 	})
