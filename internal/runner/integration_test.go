@@ -820,10 +820,9 @@ func TestIntegration_FanOut_ListPlusPerItemDetails(t *testing.T) {
 	cfg := baseConfig(detailSrv.URL+"/items/{item}/details", dorisSrv.URL)
 	cfg.Source.DataPath = "items"
 	cfg.Source.FanOut = &config.FanOutConfig{
-		ListURL:         listSrv.URL,
-		ListDataPath:    "items",
-		ItemField:       "key",
-		ItemPlaceholder: "item",
+		ListURL:      listSrv.URL,
+		ListDataPath: "items",
+		ItemFields:   config.FieldSpec{{Placeholder: "item", Path: "key"}},
 	}
 	cfg.Pagination = config.PaginationConfig{
 		Type:         "page_number",
@@ -865,14 +864,15 @@ func TestIntegration_FanOut_ListPlusPerItemDetails(t *testing.T) {
 	}
 }
 
-// TestIntegration_FanOut_ItemColumn verifies the fr2.md SonarQube use case:
-// the detail endpoint's response body does not echo back the fan-out item
-// identifier anywhere (e.g. SonarQube's search_history response contains no
-// "component"/project-key field). With fanout.item_column configured, every
+// TestIntegration_FanOut_ItemFieldsColumnInjection verifies the fr2.md
+// SonarQube use case: the detail endpoint's response body does not echo back
+// the fan-out item identifier anywhere (e.g. SonarQube's search_history
+// response contains no "component"/project-key field). Every item_fields
+// entry auto-injects as its own column named after its placeholder, so every
 // entity extracted from that item's detail response(s) — across all of that
 // item's paginated pages, not just the first — must carry the fan-out item's
-// value under that column.
-func TestIntegration_FanOut_ItemColumn(t *testing.T) {
+// value under that placeholder/column name.
+func TestIntegration_FanOut_ItemFieldsColumnInjection(t *testing.T) {
 	state := &dorisState{}
 	dorisSrv := newDorisServer(t, state)
 	defer dorisSrv.Close()
@@ -886,9 +886,9 @@ func TestIntegration_FanOut_ItemColumn(t *testing.T) {
 	}))
 	defer listSrv.Close()
 
-	// Detail endpoint: path is /items/{item}/details?p=&ps=; each item has 2
-	// pages of 1 entity each, and the entity body deliberately carries no
-	// field identifying which item it came from — mirroring SonarQube's
+	// Detail endpoint: path is /items/{project_key}/details?p=&ps=; each item
+	// has 2 pages of 1 entity each, and the entity body deliberately carries
+	// no field identifying which item it came from — mirroring SonarQube's
 	// search_history response shape.
 	detailSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		page := r.URL.Query().Get("p")
@@ -901,14 +901,12 @@ func TestIntegration_FanOut_ItemColumn(t *testing.T) {
 	}))
 	defer detailSrv.Close()
 
-	cfg := baseConfig(detailSrv.URL+"/items/{item}/details", dorisSrv.URL)
+	cfg := baseConfig(detailSrv.URL+"/items/{project_key}/details", dorisSrv.URL)
 	cfg.Source.DataPath = "items"
 	cfg.Source.FanOut = &config.FanOutConfig{
-		ListURL:         listSrv.URL,
-		ListDataPath:    "items",
-		ItemField:       "key",
-		ItemPlaceholder: "item",
-		ItemColumn:      "project_key",
+		ListURL:      listSrv.URL,
+		ListDataPath: "items",
+		ItemFields:   config.FieldSpec{{Placeholder: "project_key", Path: "key"}},
 	}
 	cfg.Pagination = config.PaginationConfig{
 		Type:         "page_number",
@@ -981,10 +979,9 @@ func TestIntegration_FanOut_OneItemFailsOthersSucceed(t *testing.T) {
 	cfg.Source.DataPath = "items"
 	cfg.Threading.Retry = config.RetryConfig{MaxAttempts: 1}
 	cfg.Source.FanOut = &config.FanOutConfig{
-		ListURL:         listSrv.URL,
-		ListDataPath:    "items",
-		ItemField:       "key",
-		ItemPlaceholder: "item",
+		ListURL:      listSrv.URL,
+		ListDataPath: "items",
+		ItemFields:   config.FieldSpec{{Placeholder: "item", Path: "key"}},
 	}
 	cfg.Pagination = config.PaginationConfig{
 		Type:         "page_number",
@@ -1028,10 +1025,9 @@ func TestIntegration_FanOut_NoItems(t *testing.T) {
 	cfg := baseConfig(detailSrv.URL+"/items/{item}/details", dorisSrv.URL)
 	cfg.Source.DataPath = "items"
 	cfg.Source.FanOut = &config.FanOutConfig{
-		ListURL:         listSrv.URL,
-		ListDataPath:    "items",
-		ItemField:       "key",
-		ItemPlaceholder: "item",
+		ListURL:      listSrv.URL,
+		ListDataPath: "items",
+		ItemFields:   config.FieldSpec{{Placeholder: "item", Path: "key"}},
 	}
 	cfg.Pagination = config.PaginationConfig{
 		Type: "page_number", Injection: "query_params", StartPage: 1,

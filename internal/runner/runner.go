@@ -44,9 +44,13 @@ type Runner struct {
 	// listPagAdapter paginates the fan-out list fetch (source.fanout.list_pagination).
 	// nil unless source.fanout is configured with a non-empty list_pagination block.
 	listPagAdapter pagination.Adapter
-	fetcher        *fetcher.Fetcher
-	flat           *flattener.Flattener
-	loader         *doris.StreamLoader
+	// subListPagAdapter paginates the fan-out sub-list fetch
+	// (source.fanout.sub_list.pagination). nil unless source.fanout.sub_list is
+	// configured with a non-empty pagination block.
+	subListPagAdapter pagination.Adapter
+	fetcher           *fetcher.Fetcher
+	flat              *flattener.Flattener
+	loader            *doris.StreamLoader
 }
 
 // New constructs a Runner, initialising all adapters from the configuration.
@@ -63,21 +67,31 @@ func New(cfg *config.Config) (*Runner, error) {
 	}
 
 	var listPagAdapter pagination.Adapter
-	if cfg.Source.FanOut != nil && !cfg.Source.FanOut.ListPagination.IsZero() {
-		listPagAdapter, err = pagination.NewAdapter(cfg.Source.FanOut.ListPagination)
-		if err != nil {
-			return nil, fmt.Errorf("runner: init fan-out list pagination adapter: %w", err)
+	var subListPagAdapter pagination.Adapter
+	if cfg.Source.FanOut != nil {
+		if !cfg.Source.FanOut.ListPagination.IsZero() {
+			listPagAdapter, err = pagination.NewAdapter(cfg.Source.FanOut.ListPagination)
+			if err != nil {
+				return nil, fmt.Errorf("runner: init fan-out list pagination adapter: %w", err)
+			}
+		}
+		if sl := cfg.Source.FanOut.SubList; sl != nil && !sl.Pagination.IsZero() {
+			subListPagAdapter, err = pagination.NewAdapter(sl.Pagination)
+			if err != nil {
+				return nil, fmt.Errorf("runner: init fan-out sub-list pagination adapter: %w", err)
+			}
 		}
 	}
 
 	return &Runner{
-		cfg:            cfg,
-		authAdapter:    authAdapter,
-		pagAdapter:     pagAdapter,
-		listPagAdapter: listPagAdapter,
-		fetcher:        fetcher.New(cfg.Source, cfg.Threading.Retry, authAdapter),
-		flat:           flattener.New(cfg.Flattening),
-		loader:         doris.NewStreamLoader(cfg.Doris),
+		cfg:               cfg,
+		authAdapter:       authAdapter,
+		pagAdapter:        pagAdapter,
+		listPagAdapter:    listPagAdapter,
+		subListPagAdapter: subListPagAdapter,
+		fetcher:           fetcher.New(cfg.Source, cfg.Threading.Retry, authAdapter),
+		flat:              flattener.New(cfg.Flattening),
+		loader:            doris.NewStreamLoader(cfg.Doris),
 	}, nil
 }
 
@@ -85,6 +99,10 @@ func New(cfg *config.Config) (*Runner, error) {
 func (r *Runner) Run(ctx context.Context) error {
 	if r.cfg.Source.FanOut != nil {
 		return r.runFanOut(ctx)
+	}
+
+	if seqAdapter, ok := r.pagAdapter.(pagination.SequentialAdapter); ok {
+		return r.runSequential(ctx, seqAdapter)
 	}
 
 	slog.InfoContext(ctx, "starting ingestion",
@@ -157,6 +175,41 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Steps 5–8: parallel fetch and stream of remaining pages
 	return r.fetchAndStreamRemaining(ctx, pageInfo)
+}
+
+// runSequential implements the single-endpoint ingestion pipeline for
+// sequential/cursor pagination adapters (pagination.SequentialAdapter):
+// every page's URL depends on the previous page's response body, so pages
+// must be walked strictly one at a time via sequentialPages — the existing
+// concurrent page pool (fetchAndStreamRemaining) does not apply here.
+func (r *Runner) runSequential(ctx context.Context, seqAdapter pagination.SequentialAdapter) error {
+	slog.InfoContext(ctx, "starting sequential (cursor) ingestion",
+		"url", r.cfg.Source.URL,
+		"doris_target", fmt.Sprintf("%s/api/%s/%s/_stream_load",
+			strings.TrimRight(r.cfg.Doris.Host, "/"), r.cfg.Doris.Database, r.cfg.Doris.Table),
+	)
+
+	if err := r.authAdapter.Prepare(ctx); err != nil {
+		return fmt.Errorf("runner: auth prepare: %w", err)
+	}
+
+	err := r.sequentialPages(ctx, seqAdapter, r.cfg.Pagination, r.cfg.Source.URL, r.cfg.Source.DataPath,
+		func(pageNum int, entities []map[string]any) error {
+			flat, err := r.flat.FlattenAll(entities)
+			if err != nil {
+				return fmt.Errorf("flatten page %d: %w", pageNum, err)
+			}
+			slog.InfoContext(ctx, "streaming page to Doris", "page", pageNum, "entity_count", len(flat))
+			if err := r.loader.LoadPage(ctx, flat); err != nil {
+				return fmt.Errorf("load page %d to Doris: %w", pageNum, err)
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("runner: sequential ingestion: %w", err)
+	}
+	return nil
 }
 
 // RunDryRun executes the authentication preflight and fetches only the first
@@ -261,7 +314,7 @@ func (r *Runner) runFanOut(ctx context.Context) error {
 		return fmt.Errorf("runner: fan-out list fetch: %w", err)
 	}
 
-	items, err := fanout.ExtractItems(listEntities, fo.ItemField)
+	items, err := fanout.ExtractItems(listEntities, fo.ItemFields)
 	if err != nil {
 		return fmt.Errorf("runner: fan-out item extraction: %w", err)
 	}
@@ -301,7 +354,7 @@ func (r *Runner) runFanOutDryRun(ctx context.Context) error {
 		return fmt.Errorf("runner: fan-out list fetch: %w", err)
 	}
 
-	items, err := fanout.ExtractItems(listEntities, fo.ItemField)
+	items, err := fanout.ExtractItems(listEntities, fo.ItemFields)
 	if err != nil {
 		return fmt.Errorf("runner: fan-out item extraction: %w", err)
 	}
@@ -309,10 +362,18 @@ func (r *Runner) runFanOutDryRun(ctx context.Context) error {
 		return fmt.Errorf("runner: fan-out list fetch returned no items, cannot dry-run")
 	}
 
-	firstItem := items[0]
-	slog.InfoContext(ctx, "dry-run (fan-out): using first item", "item", firstItem)
+	itemValues := items[0]
+	slog.InfoContext(ctx, "dry-run (fan-out): using first item", "item", itemValues.Label())
 
-	itemURL := fanout.BuildItemURL(r.cfg.Source.URL, fo.ItemPlaceholder, firstItem)
+	if fo.SubList != nil {
+		subValues, err := r.resolveSubListValues(ctx, itemValues)
+		if err != nil {
+			return fmt.Errorf("runner: fan-out dry-run sub-list: %w", err)
+		}
+		itemValues = itemValues.Merge(subValues)
+	}
+
+	itemURL := fanout.BuildItemURL(r.cfg.Source.URL, itemValues)
 
 	firstURL, err := r.pagAdapter.BuildURL(itemURL, r.cfg.Pagination.StartPage)
 	if err != nil {
@@ -329,7 +390,7 @@ func (r *Runner) runFanOutDryRun(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("runner: extract entities from first page: %w", err)
 	}
-	fanout.InjectItemColumn(firstEntities, fo.ItemColumn, firstItem)
+	fanout.InjectItemColumns(firstEntities, itemValues)
 
 	flatEntities, err := r.flat.FlattenAll(firstEntities)
 	if err != nil {
@@ -345,84 +406,42 @@ func (r *Runner) runFanOutDryRun(ctx context.Context) error {
 
 // fetchAllListEntities fetches the fan-out list endpoint — optionally across
 // multiple pages when source.fanout.list_pagination is configured — and
-// returns the concatenated list entities across all list pages.
+// returns the concatenated list entities across all list pages. Delegates to
+// the shared sequentialPages helper, which transparently supports both
+// counted adapters (page_number, offset) and cursor/SequentialAdapter list
+// pagination.
 func (r *Runner) fetchAllListEntities(ctx context.Context) ([]map[string]any, error) {
 	fo := r.cfg.Source.FanOut
 
-	firstURL := fo.ListURL
-	if r.listPagAdapter != nil {
-		u, err := r.listPagAdapter.BuildURL(fo.ListURL, fo.ListPagination.StartPage)
-		if err != nil {
-			return nil, fmt.Errorf("build list URL: %w", err)
-		}
-		firstURL = u
-	}
-
-	slog.InfoContext(ctx, "fan-out: fetching list page", "url", firstURL)
-	firstRaw, err := r.fetcher.FetchWithRetry(ctx, firstURL)
+	var entities []map[string]any
+	err := r.sequentialPages(ctx, r.listPagAdapter, fo.ListPagination, fo.ListURL, fo.ListDataPath,
+		func(pageNum int, pageEntities []map[string]any) error {
+			slog.InfoContext(ctx, "fan-out: fetched list page", "page", pageNum, "entity_count", len(pageEntities))
+			entities = append(entities, pageEntities...)
+			return nil
+		},
+	)
 	if err != nil {
-		return nil, fmt.Errorf("fetch list page: %w", err)
+		return nil, err
 	}
-
-	entities, err := extractEntities(firstRaw, fo.ListDataPath)
-	if err != nil {
-		return nil, fmt.Errorf("extract list entities: %w", err)
-	}
-
-	// No list pagination configured: the list endpoint returns everything in
-	// a single response.
-	if r.listPagAdapter == nil {
-		return entities, nil
-	}
-
-	obj, ok := firstRaw.(map[string]any)
-	if !ok {
-		// Array-at-root list response carries no pagination metadata; treat
-		// as a single page, same convention as the top-level pipeline.
-		return entities, nil
-	}
-	pageInfo, err := r.listPagAdapter.Evaluate(obj)
-	if err != nil {
-		// Pagination metadata not available/applicable: single page, done.
-		return entities, nil
-	}
-
-	for pageNum := pageInfo.StartPage + 1; pageNum <= pageInfo.TotalPages; pageNum++ {
-		pageURL, err := r.listPagAdapter.BuildURL(fo.ListURL, pageNum)
-		if err != nil {
-			return nil, fmt.Errorf("build list URL for page %d: %w", pageNum, err)
-		}
-
-		slog.InfoContext(ctx, "fan-out: fetching list page", "url", pageURL, "page", pageNum)
-		raw, err := r.fetcher.FetchWithRetry(ctx, pageURL)
-		if err != nil {
-			return nil, fmt.Errorf("fetch list page %d: %w", pageNum, err)
-		}
-
-		pageEntities, err := extractEntities(raw, fo.ListDataPath)
-		if err != nil {
-			return nil, fmt.Errorf("extract list entities from page %d: %w", pageNum, err)
-		}
-		entities = append(entities, pageEntities...)
-	}
-
 	return entities, nil
 }
 
 // fanOutItemResult carries the outcome of processing a single fan-out item.
 type fanOutItemResult struct {
-	item string
+	item fanout.Values
 	err  error
 }
 
 // fetchAndStreamFanOutItems dispatches one goroutine per fan-out item, bounded
 // by threading.max_goroutines (reusing the same semaphore/channel pattern as
 // fetchAndStreamRemaining, applied across items instead of across pages).
-// Each item's own detail pages are fetched and streamed sequentially within
-// that item's goroutine — concurrency is only applied across items, not
-// nested across an item's pages. A failing item is logged and skipped; the
-// aggregate error (if any) is returned once every item has been attempted.
-func (r *Runner) fetchAndStreamFanOutItems(ctx context.Context, items []string) error {
+// Each item's own work (optional sub-list fetch, then detail pages) runs
+// sequentially within that item's goroutine — concurrency is only applied
+// across items, never nested within a single item's work. A failing item is
+// logged and skipped; the aggregate error (if any) is returned once every
+// item has been attempted.
+func (r *Runner) fetchAndStreamFanOutItems(ctx context.Context, items []fanout.Values) error {
 	results := make(chan fanOutItemResult, r.cfg.Threading.MaxGoroutines)
 	sem := make(chan struct{}, r.cfg.Threading.MaxGoroutines)
 
@@ -432,11 +451,11 @@ func (r *Runner) fetchAndStreamFanOutItems(ctx context.Context, items []string) 
 			wg.Add(1)
 			sem <- struct{}{} // acquire concurrency slot
 
-			go func(it string) {
+			go func(it fanout.Values) {
 				defer wg.Done()
 				defer func() { <-sem }() // release slot when done
 
-				slog.InfoContext(ctx, "fan-out: processing item", "item", it)
+				slog.InfoContext(ctx, "fan-out: processing item", "item", it.Label())
 				results <- fanOutItemResult{item: it, err: r.processFanOutItem(ctx, it)}
 			}(item)
 		}
@@ -448,8 +467,8 @@ func (r *Runner) fetchAndStreamFanOutItems(ctx context.Context, items []string) 
 	succeeded := 0
 	for res := range results {
 		if res.err != nil {
-			slog.ErrorContext(ctx, "fan-out item failed", "item", res.item, "error", res.err)
-			errs = append(errs, fmt.Errorf("item %q: %w", res.item, res.err))
+			slog.ErrorContext(ctx, "fan-out item failed", "item", res.item.Label(), "error", res.err)
+			errs = append(errs, fmt.Errorf("item %q: %w", res.item.Label(), res.err))
 			continue
 		}
 		succeeded++
@@ -464,99 +483,79 @@ func (r *Runner) fetchAndStreamFanOutItems(ctx context.Context, items []string) 
 	return errors.Join(errs...)
 }
 
-// processFanOutItem runs the existing single-endpoint pipeline for one
-// fan-out item: build the item's detail URL, fetch/flatten/stream its first
-// page, then (if the detail endpoint is itself paginated) sequentially
-// fetch/flatten/stream the remaining pages for that item.
-func (r *Runner) processFanOutItem(ctx context.Context, item string) error {
-	itemURL := fanout.BuildItemURL(r.cfg.Source.URL, r.cfg.Source.FanOut.ItemPlaceholder, item)
+// processFanOutItem runs the pipeline for one fan-out item: optionally
+// resolve the item's sub-list first/last field values (source.fanout.sub_list),
+// merge them into the item's values, build the item's final detail URL, then
+// walk the detail endpoint's pages (via the shared sequentialPages helper,
+// which transparently supports both counted and cursor pagination adapters),
+// injecting every resolved value as a column on every entity before
+// flattening and streaming each page to Doris.
+func (r *Runner) processFanOutItem(ctx context.Context, item fanout.Values) error {
+	values := item
 
-	firstURL, err := r.pagAdapter.BuildURL(itemURL, r.cfg.Pagination.StartPage)
-	if err != nil {
-		return fmt.Errorf("build first page URL: %w", err)
-	}
-
-	slog.InfoContext(ctx, "fan-out: fetching item's first page", "item", item, "url", firstURL)
-	firstRaw, err := r.fetcher.FetchWithRetry(ctx, firstURL)
-	if err != nil {
-		return fmt.Errorf("fetch first page: %w", err)
-	}
-
-	firstEntities, err := extractEntities(firstRaw, r.cfg.Source.DataPath)
-	if err != nil {
-		return fmt.Errorf("extract entities from first page: %w", err)
-	}
-	fanout.InjectItemColumn(firstEntities, r.cfg.Source.FanOut.ItemColumn, item)
-
-	flatFirst, err := r.flat.FlattenAll(firstEntities)
-	if err != nil {
-		return fmt.Errorf("flatten first page: %w", err)
-	}
-
-	slog.InfoContext(ctx, "fan-out: streaming item's first page to Doris",
-		"item", item, "entity_count", len(flatFirst))
-	if err := r.loader.LoadPage(ctx, flatFirst); err != nil {
-		return fmt.Errorf("load first page to Doris: %w", err)
-	}
-
-	pageInfo, err := r.evaluatePagination(firstRaw)
-	if err != nil {
-		// Array-at-root or missing metadata → treat as single page, done.
-		return nil
-	}
-
-	if maxPages := r.cfg.Pagination.MaxPages; maxPages > 0 && pageInfo.TotalPages > maxPages {
-		pageInfo.TotalPages = maxPages
-	}
-
-	for pageNum := pageInfo.StartPage + 1; pageNum <= pageInfo.TotalPages; pageNum++ {
-		res := r.fetchItemPage(ctx, itemURL, item, pageNum)
-		if res.err != nil {
-			return fmt.Errorf("item page %d: %w", pageNum, res.err)
+	if r.cfg.Source.FanOut.SubList != nil {
+		subValues, err := r.resolveSubListValues(ctx, item)
+		if err != nil {
+			return fmt.Errorf("resolve sub-list values: %w", err)
 		}
-		slog.InfoContext(ctx, "fan-out: streaming item page to Doris",
-			"item", item, "page", pageNum, "entity_count", len(res.entities))
-		if err := r.loader.LoadPage(ctx, res.entities); err != nil {
-			return fmt.Errorf("load page %d to Doris: %w", pageNum, err)
-		}
+		values = item.Merge(subValues)
 	}
 
+	itemURL := fanout.BuildItemURL(r.cfg.Source.URL, values)
+
+	err := r.sequentialPages(ctx, r.pagAdapter, r.cfg.Pagination, itemURL, r.cfg.Source.DataPath,
+		func(pageNum int, entities []map[string]any) error {
+			fanout.InjectItemColumns(entities, values)
+
+			flat, err := r.flat.FlattenAll(entities)
+			if err != nil {
+				return fmt.Errorf("flatten page %d: %w", pageNum, err)
+			}
+
+			slog.InfoContext(ctx, "fan-out: streaming item page to Doris",
+				"item", item.Label(), "page", pageNum, "entity_count", len(flat))
+			if err := r.loader.LoadPage(ctx, flat); err != nil {
+				return fmt.Errorf("load page %d to Doris: %w", pageNum, err)
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("item %q: %w", item.Label(), err)
+	}
 	return nil
 }
 
-// fetchItemPage fetches a single detail page for a fan-out item, extracts its
-// entities, flattens them, and returns a pageResult (which may carry an error
-// instead of entities). itemURL is the already item-substituted base URL for
-// this item (before pagination placeholders are applied). item is the raw
-// fan-out item value, used to inject fanout.item_column (when configured)
-// into every entity extracted from this page.
-func (r *Runner) fetchItemPage(ctx context.Context, itemURL, item string, pageNum int) pageResult {
-	pageURL, err := r.pagAdapter.BuildURL(itemURL, pageNum)
+// resolveSubListValues fetches the per-item sub-list (source.fanout.sub_list),
+// walking its pages sequentially via the shared sequentialPages helper
+// (reusing r.fetcher/auth/retry — the sub-list fetch is not a separate auth
+// context), and extracts first_item_fields from the first entity of the
+// first page and last_item_fields from the last entity of the last page.
+//
+// An empty sub-list result is a hard error for this item, surfaced via
+// fanout.ExtractFirstLast — there is no silent empty-placeholder fallback.
+func (r *Runner) resolveSubListValues(ctx context.Context, item fanout.Values) (fanout.Values, error) {
+	sl := r.cfg.Source.FanOut.SubList
+	listURL := fanout.BuildItemURL(sl.ListURL, item)
+
+	var pages [][]map[string]any
+	err := r.sequentialPages(ctx, r.subListPagAdapter, sl.Pagination, listURL, sl.ListDataPath,
+		func(pageNum int, entities []map[string]any) error {
+			slog.InfoContext(ctx, "fan-out: fetched sub-list page",
+				"item", item.Label(), "page", pageNum, "entity_count", len(entities))
+			pages = append(pages, entities)
+			return nil
+		},
+	)
 	if err != nil {
-		return pageResult{pageNum: pageNum,
-			err: fmt.Errorf("build URL for page %d: %w", pageNum, err)}
+		return nil, fmt.Errorf("sub-list fetch: %w", err)
 	}
 
-	raw, err := r.fetcher.FetchWithRetry(ctx, pageURL)
+	values, err := fanout.ExtractFirstLast(pages, sl.FirstItemFields, sl.LastItemFields)
 	if err != nil {
-		return pageResult{pageNum: pageNum,
-			err: fmt.Errorf("fetch page %d: %w", pageNum, err)}
+		return nil, fmt.Errorf("sub-list extraction: %w", err)
 	}
-
-	entities, err := extractEntities(raw, r.cfg.Source.DataPath)
-	if err != nil {
-		return pageResult{pageNum: pageNum,
-			err: fmt.Errorf("extract entities from page %d: %w", pageNum, err)}
-	}
-	fanout.InjectItemColumn(entities, r.cfg.Source.FanOut.ItemColumn, item)
-
-	flatEntities, err := r.flat.FlattenAll(entities)
-	if err != nil {
-		return pageResult{pageNum: pageNum,
-			err: fmt.Errorf("flatten page %d: %w", pageNum, err)}
-	}
-
-	return pageResult{pageNum: pageNum, entities: flatEntities}
+	return values, nil
 }
 
 // fetchAndStreamRemaining spawns goroutines for pages [startPage+1 … totalPages],

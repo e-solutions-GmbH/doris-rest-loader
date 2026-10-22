@@ -24,3 +24,23 @@ type Adapter interface {
 	// corresponding byte/record offset internally.
 	BuildURL(baseURL string, pageNum int) (string, error)
 }
+
+// SequentialAdapter is implemented by pagination adapters whose page URLs
+// cannot be known ahead of time — each page's URL depends on the previous
+// page's response (e.g. cursor-based pagination, since the next cursor
+// value only becomes known once the current page's response body has been
+// parsed). Adapters implementing SequentialAdapter must be walked one page
+// at a time, never concurrently: a counted adapter's Evaluate + per-page
+// BuildURL(baseURL, pageNum) protocol does not apply to them (Evaluate
+// returns an error), so callers must type-assert Adapter values to
+// SequentialAdapter and route to a dedicated sequential page walk instead of
+// the concurrent fetch-pool used for counted adapters (page_number, offset).
+type SequentialAdapter interface {
+	Adapter
+
+	// NextPageURL inspects currentPageResponse (the top-level JSON object of
+	// the page that was just fetched) and returns the URL for the next page.
+	// hasNext is false when pagination is complete (there is no next page);
+	// in that case url is unspecified and must not be used.
+	NextPageURL(baseURL string, currentPageResponse map[string]any) (url string, hasNext bool, err error)
+}
